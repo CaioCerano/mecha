@@ -121,10 +121,11 @@ func refresh(selected_id: int, pending_action: String, hint: String) -> void:
 		_action_box.add_child(move_btn)
 		for act: String in MechActions.available_actions(_state, sel):
 			var b := Button.new()
-			b.text = "%s  (1 AP)" % MechActions.action_label(act)
+			var free: bool = MechActions.is_free(act)
+			b.text = "%s  (%s)" % [MechActions.action_label(act), "free" if free else "1 AP"]
 			if pending_action == act:
 				b.text = "▶ " + b.text
-			b.disabled = sel.ap < 1
+			b.disabled = not free and sel.ap < 1
 			var a: String = act
 			b.pressed.connect(func() -> void: action_chosen.emit(a))
 			_action_box.add_child(b)

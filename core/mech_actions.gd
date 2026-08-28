@@ -18,6 +18,13 @@ const CANNON_RANGE: int = 8
 const MORTAR_DMG: int = 3
 const MORTAR_RANGE: int = 6
 
+## Picking your own gear back up is free — the cost of throwing the spear /
+## deploying the shield is meant to be positional, not an action-economy tax.
+const FREE_ACTIONS: Array[String] = ["retrieve_spear", "retrieve_shield"]
+
+static func is_free(action_id: String) -> bool:
+	return action_id in FREE_ACTIONS
+
 # ------------------------------------------------------------- action listing
 
 static func available_actions(state: BattleState, unit: Unit) -> Array[String]:

@@ -62,6 +62,26 @@ func test_retrieve_spear_only_when_adjacent_then_restores_thrust() -> void:
 	assert_null(s.object_at(Vector2i(5, 5)), "spear picked up off the grid")
 	assert_true("thrust" in MechActions.available_actions(s, spear))
 
+func test_retrieve_spear_via_player_action_costs_no_ap() -> void:
+	var s := _state()
+	var spear := TestUtil.add(s, Unit.Kind.SPEAR, Unit.Team.PLAYER, Vector2i(2, 5))
+	TestUtil.add(s, Unit.Kind.GRUNT, Unit.Team.ENEMY, Vector2i(6, 5))   # stops the spear at (5, 5)
+	spear.ap = 2
+	MechActions.execute(s, spear, "throw_spear", Vector2i(6, 5))
+	s.move_unit(spear, Vector2i(5, 6))
+	spear.ap = 1
+	assert_true(s.player_action(spear, "retrieve_spear", Vector2i(5, 5)))
+	assert_true(spear.has_spear)
+	assert_eq(spear.ap, 1, "retrieve is free — positioning is the only cost")
+
+func test_retrieve_shield_works_with_zero_ap() -> void:
+	var s := _state()
+	var shield := TestUtil.add(s, Unit.Kind.SHIELD, Unit.Team.PLAYER, Vector2i(5, 5))
+	MechActions.execute(s, shield, "deploy_shield", Vector2i(6, 5))
+	shield.ap = 0
+	assert_true(s.player_action(shield, "retrieve_shield", Vector2i(6, 5)), "no AP left, still allowed")
+	assert_false(shield.shield_deployed)
+
 func test_throw_spear_blocked_by_wall_lands_short() -> void:
 	var s := _state()
 	var spear := TestUtil.add(s, Unit.Kind.SPEAR, Unit.Team.PLAYER, Vector2i(2, 5))

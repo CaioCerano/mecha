@@ -45,7 +45,8 @@ Mouse only. Click a mech (or the squad list) to select it. Each mech has
 
 - Click a **blue** tile to move (1 AP).
 - Click an action button, then a **gold** tile to aim it (1 AP). Right-click
-  or Esc cancels aiming.
+  or Esc cancels aiming. *Retrieving your own spear / shield is free* — the
+  cost of throwing or deploying is positional, not AP.
 - Hovering a target shows the full preview: attack line, AoE, push
   destination, spear landing cell, which units get hit, and a red outline on
   the reactor if your own shot would clip it.

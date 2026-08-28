@@ -192,14 +192,18 @@ func player_move(unit: Unit, dest: Vector2i) -> bool:
 	return true
 
 func player_action(unit: Unit, action_id: String, target_cell: Vector2i) -> bool:
-	if phase != Phase.PLAYER or not unit.is_alive() or unit.ap < 1:
+	if phase != Phase.PLAYER or not unit.is_alive():
+		return false
+	var free: bool = MechActions.is_free(action_id)
+	if not free and unit.ap < 1:
 		return false
 	if not action_id in MechActions.available_actions(self, unit):
 		return false
 	if not ActionPreview.build(self, unit, action_id, target_cell).valid:
 		return false
 	MechActions.execute(self, unit, action_id, target_cell)
-	unit.ap -= 1
+	if not free:
+		unit.ap -= 1
 	_check_end()
 	return true
 
