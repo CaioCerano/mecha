@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://b0mecha0battle"]
+
+[ext_resource type="Script" path="res://game/battle.gd" id="1"]
+
+[node name="Battle" type="Node2D"]
+script = ExtResource("1")
