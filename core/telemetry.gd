@@ -46,8 +46,12 @@ func note_death(state: BattleState, unit: Unit, cause: String, by_id: int) -> vo
 	if unit.is_player():
 		return
 	bump("enemies_killed")
-	if cause == "pit":
-		bump("pit_deaths")
+	# by cause -- so we can see how many kills came from positioning the board
+	# (pit / blast / slam) versus straight damage.
+	match cause:
+		"pit": bump("pit_deaths")
+		"explosion": bump("blast_kills")
+		"collision": bump("collision_kills")
 	var src: Unit = state.units.get(by_id)
 	if src != null and src.kind == Unit.Kind.GRAPPLER:
 		bump("grappler_kills")
@@ -68,7 +72,12 @@ func summary_text(state: BattleState) -> String:
 	lines.append("================  MISSION SUMMARY  ================")
 	lines.append("Result: %s   Turns: %d   Reactor: %d/%d   Enemies left: %d" % [
 		result, turns_completed, maxi(state.reactor.hp, 0), state.reactor.max_hp, enemies_alive_at_end])
-	lines.append("Enemies killed: %d" % c.get("enemies_killed", 0))
+	var kills: int = c.get("enemies_killed", 0)
+	var pit: int = c.get("pit_deaths", 0)
+	var blast: int = c.get("blast_kills", 0)
+	var slam: int = c.get("collision_kills", 0)
+	lines.append("Enemies killed: %d   (direct %d · pit %d · blast %d · slam %d)" % [
+		kills, maxi(kills - pit - blast - slam, 0), pit, blast, slam])
 	for kind: int in [Unit.Kind.LANCER, Unit.Kind.BULWARK, Unit.Kind.GRAPPLER]:
 		lines.append("")
 		lines.append("%s" % names[kind])

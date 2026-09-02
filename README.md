@@ -28,15 +28,23 @@ Pure-logic core (`core/`) is headless-testable with GUT:
 
 If GUT reports missing class_names, run `--headless --import` once first.
 
-## The mission
+## The missions
 
-Defend the reactor (purple) for **5 turns**. Enemies (red) pour in from the
-edges and make for the reactor.
+Two hand-designed encounters, switchable from the **MISSION** dropdown at the
+top of the sidebar (a dev selector, not a campaign). Both: defend the reactor
+(purple) for **5 turns**; win if it's alive at the end of turn 5; lose if its
+HP hits 0 or all three mechs die; you never have to kill everything, and doing
+nothing always loses.
 
-- **Win:** reactor still alive at the end of turn 5.
-- **Lose:** reactor HP hits 0, or all three mechs are destroyed.
-- You do **not** need to kill everything. Doing nothing loses — you have to
-  actively solve each turn.
+- **Reactor Breach** — enemies pour in from every edge; a north pit under a
+  charge lane, a NE pit, two barrels on the approaches, an Artillery + Charger
+  + fresh wave turn-4 crunch.
+- **The Chokepoint** — one wall splits the map; everything funnels through
+  three two-wide gaps. The centre gap is a straight shot to the reactor and the
+  only lane the Chargers use. Two pits sit on the centre lane's shoulders (a
+  *shove* feeds them, not a walk); two barrels flank the reactor. Three mechs,
+  three lanes, and two Interceptors that pull you off station — you can't just
+  out-damage one lane in peace.
 
 ## Controls
 
@@ -148,9 +156,11 @@ what happens.
 **Missions are data.** `MissionData` holds a single encounter's layout (map,
 walls, pits, barrels, reactor, mech starts, initial enemies, spawn points +
 schedule, turn limit, objectives, defeat flags). `BattleState.new(mission_data)`
-reads it; `Mission.reactor_breach()` builds the one hand-designed slice. Shared
-*rules* (unit stats, damage numbers, terrain damage) stay as consts on `Mission`
-/ `enemy_ai.gd` — those aren't per-mission.
+reads it; `Mission.reactor_breach()` / `Mission.the_chokepoint()` build the
+hand-designed slices, and `Mission.catalog()` / `by_id()` are the small registry
+the HUD's dev picker drives — `battle.gd` only ever holds a `mission_id` string.
+Shared *rules* (unit stats, damage numbers, terrain damage) stay as consts on
+`Mission` / `enemy_ai.gd` — those aren't per-mission.
 
 When a mission ends, a dev-only `Telemetry` summary prints to the console
 (actions per mech, damage by category, enemies displaced, intents interrupted,

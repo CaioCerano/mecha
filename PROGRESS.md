@@ -3,10 +3,11 @@
 Built in the spec's 17-step order, then a run of combat-design passes:
 playtest feedback, readability UI, telegraphed reinforcements, mech rebalances,
 the Grappler control rework, enemy-intent projection + terrain + the Interceptor,
-and now prediction-consistency fixes + a data-driven mission format + the first
-hand-designed vertical slice (**Reactor Breach**) + dev telemetry. All 121 GUT
-tests green; headless probes confirm passive play loses (turn 4) and greedy
-play holds at 2/12 reactor.
+prediction-consistency fixes + a data-driven mission format + the first
+hand-designed vertical slice (**Reactor Breach**) + dev telemetry, and now a
+**second** hand-designed slice (**The Chokepoint**) + a dev mission picker. All
+137 GUT tests green; headless probes confirm passive play loses both missions by
+turn 4.
 
 ## Done
 
@@ -183,20 +184,69 @@ Fix: its usefulness now comes from *where it puts things*, not damage.
 - **REACTOR BREACH** — the hand-built slice (layout + waves below).
 - **`Telemetry`** — dev-only per-mission counters, printed on mission end.
 
+## Iteration 9 — a second encounter: The Chokepoint
+
+Purpose: use a second hand-built mission to check whether the existing systems
+support a *meaningfully different* tactical puzzle without new mechanics.
+
+- **`Mission` is now a small registry.** `Mission.catalog()` / `ids()` /
+  `by_id(id)` / `display_name(id)`. `BattleState.new(Mission.by_id(x))` starts
+  a mission. Not a campaign — just the set the dev picker can launch.
+- **Dev mission picker.** An `OptionButton` at the top of the HUD sidebar
+  (`Hud.mission_selected(id)` → `battle.gd` sets `mission_id`, restarts). No
+  campaign flow; `battle.gd` never names a mission, it just reads `mission_id`.
+- **`Mission.the_chokepoint()`** — one east-west divider wall with three
+  two-wide gaps (west / centre / east). Centre is a clean straight line from
+  the north edge to the reactor and the only lane both reinforcement Chargers
+  use. Two pits on the centre lane's *shoulders* (a shove, not a walk, feeds
+  them); two barrels beside the reactor's flank approaches (cluster clear, but
+  a squad start tile sits in each blast). Three grunts live from turn 1, one
+  per lane; roster drops the Artillery. 5-turn hold, same as Reactor Breach.
+- **Telemetry** — `note_death` now tags kills by cause; the summary prints
+  `killed: N (direct · pit · blast · slam)` so a run shows how much of the
+  work was positioning vs. damage.
+- **Tests** — `tests/unit/test_chokepoint.gd` (registry/picker logic, data
+  validity, reachability, init, determinism, reinforcement timing, the
+  shove-into-pit tactic, telemetry categories) + 4 mission-level tests in
+  `tests/integration/test_mission.gd`. 121 → 137. The shared greedy bot now
+  path-follows instead of manhattan-stepping (robust on a divided map).
+
 ## Difficulty shape (verified headless)
 
-- Passive play (End Turn only) → **DEFEAT**, reactor gone by turn 4.
-- Greedy play (melee in reach, throw/spear, grapple the frontrunner, else
-  close in) → **VICTORY**, reactor at ~half, squad usually intact.
+- **Reactor Breach** — passive → DEFEAT (reactor gone turn 4); greedy → VICTORY,
+  reactor ~1–2/12, squad intact.
+- **The Chokepoint** — passive → DEFEAT turn 4; damage-only play (melee + spear,
+  no repositioning) → scrapes a VICTORY at reactor 3/12 **and loses a mech**;
+  play that uses grapple / pits → comfortable VICTORY, squad intact. The gap
+  between the last two is the point of the mission.
 
 ## Known rough edges / next iteration candidates
 
-- Grappler *Throw* always launches straight away from the mech (the clicked
-  adjacent cell is the direction). No free-aim; reposition to change the line.
-- Charger never repositions on its windup turn (kept simple; telegraph is a
-  fair full-turn warning). Revisit if chargers feel toothless.
-- Enemy-turn playback is sequential and fixed-timed; fine for a POC, could
-  batch simultaneous events.
+- **Charger windup (observed on The Chokepoint).** With the centre lane
+  narrowed, a windup Charger is easy to neutralise — a body on the lane or a
+  single shove ends it — and it never re-aims. It still creates a real "spend a
+  turn on this or eat 3" decision the first time, but a Charger that telegraphs
+  into a lane the player has already fortified is dead weight. Candidate fix
+  (kept separate, not required for the mission): on its windup turn, let a
+  Charger take up to `move/2` steps to line up a *different* clear lane to the
+  reactor before committing — still a full-turn telegraph, but the player has
+  to actually hold every lane, not just the one it first picked.
+- **Enemy-turn playback (observed).** The Chokepoint routinely has 6–10 enemies
+  moving in a phase; sequential fixed-timed playback of that many independent
+  walks is noticeably slow and the individual moves stop carrying information.
+  Focused follow-up (do NOT fold into a mission task): batch a phase's events
+  into "waves" — resolve non-interacting moves in parallel, keep a beat only
+  for damage / a charge / a detonation.
+- **Grappler Throw targeting (observed).** The straight-line-away constraint
+  read fine here: the useful plays (shove a centre enemy into a shoulder pit,
+  a flanker into a chamber nub) all want the mech positioned first, which is
+  the intended cost. It only felt bad when a pit was one tile off the throw
+  line and the answer was "walk one tile, then throw" — annoying but legible.
+  No change recommended yet.
+- Enemy-turn playback is sequential and fixed-timed (see above).
 - No sound. Placeholder shapes only, as intended.
 - Balance constants (`mission.gd`, `mech_actions.gd`, `enemy_ai.gd`) are still
   first-pass — tune against real playtests.
+- The Chokepoint's crude positioning-bot probe wins at reactor 9/12 — softer
+  than Reactor Breach's greedy (1–2/12). Real difficulty rests on the
+  damage-only-loses-a-mech gap; wants a human playtest to confirm it bites.

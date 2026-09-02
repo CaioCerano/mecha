@@ -40,6 +40,9 @@ var unit_views: Dictionary[int, UnitView] = {}
 var object_views: Array[GridObjectView] = []
 var reactor_view: GridObjectView
 
+## Which hand-designed mission to (re)start. Changed only by the HUD dev picker.
+var mission_id: String = Mission.REACTOR_BREACH
+
 var selected_id: int = -1
 var pending_action: String = ""       # "" | "move" | an action id
 var focus_cell: Vector2i = NO_CELL    # grapple/throw: the grabbed target (stage 2)
@@ -66,7 +69,7 @@ func _start_mission() -> void:
 	focus_cell = NO_CELL
 	_busy = false
 
-	state = BattleState.new()
+	state = BattleState.new(Mission.by_id(mission_id))
 
 	grid_view = GridView.new()
 	add_child(grid_view)
@@ -95,6 +98,7 @@ func _start_mission() -> void:
 	hud.mech_chosen.connect(_on_mech_chosen)
 	hud.end_turn_pressed.connect(_on_end_turn)
 	hud.restart_pressed.connect(_start_mission)
+	hud.mission_selected.connect(_on_mission_selected)
 
 	refresh()
 
@@ -238,6 +242,12 @@ func _stage2_cells(sel: Unit) -> Array[Vector2i]:
 	return []
 
 # ---------------------------------------------------------------- hud signals
+
+func _on_mission_selected(id: String) -> void:
+	if id == mission_id:
+		return
+	mission_id = id
+	_start_mission()
 
 func _on_mech_chosen(id: int) -> void:
 	if _busy:

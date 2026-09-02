@@ -9,6 +9,7 @@ signal action_chosen(action_id: String)
 signal mech_chosen(id: int)
 signal end_turn_pressed
 signal restart_pressed
+signal mission_selected(id: String)
 
 const PANEL_POS := Vector2(836, 36)
 const PANEL_SIZE := Vector2(408, 828)
@@ -25,6 +26,7 @@ var _mech_box: VBoxContainer
 var _panel_title: Label
 var _detail_box: VBoxContainer
 var _end_btn: Button
+var _mission_pick: OptionButton
 var _banner: PanelContainer
 var _banner_label: Label
 var _banner_summary: Label
@@ -70,6 +72,26 @@ func _build() -> void:
 	var root := VBoxContainer.new()
 	root.add_theme_constant_override("separation", 8)
 	pad.add_child(root)
+
+	# --- dev mission picker (not a campaign -- just switch the hand-built slice) --
+	var mrow := HBoxContainer.new()
+	mrow.add_theme_constant_override("separation", 6)
+	root.add_child(mrow)
+	_mk_label(mrow, "MISSION", 11).modulate = Color(1, 1, 1, 0.55)
+	_mission_pick = OptionButton.new()
+	_mission_pick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var sel_idx := 0
+	for i: int in Mission.catalog().size():
+		var entry: Dictionary = Mission.catalog()[i]
+		_mission_pick.add_item(entry["name"], i)
+		if entry["id"] == _state.data.id:
+			sel_idx = i
+	_mission_pick.select(sel_idx)
+	_mission_pick.item_selected.connect(func(idx: int) -> void:
+		mission_selected.emit(Mission.ids()[idx]))
+	mrow.add_child(_mission_pick)
+
+	root.add_child(_hsep())
 
 	# --- mission status -------------------------------------------------
 	var head := HBoxContainer.new()

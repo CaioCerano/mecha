@@ -115,6 +115,45 @@ func test_surviving_five_enemy_turns_with_reactor_alive_wins() -> void:
 	s.end_player_turn()
 	assert_eq(s.phase, BattleState.Phase.WON)
 
+# ------------------------------------------------------------------- The Chokepoint
+
+func test_chokepoint_passive_play_reliably_loses() -> void:
+	var s := BattleState.new(Mission.the_chokepoint())
+	var guard := 0
+	while s.phase == BattleState.Phase.PLAYER and guard < 20:
+		guard += 1
+		s.end_player_turn()
+	assert_eq(s.phase, BattleState.Phase.LOST, "doing nothing loses the reactor")
+	assert_eq(maxi(s.reactor.hp, 0), 0)
+	assert_true(s.turns_survived < s.data.turn_limit, "and it falls before turn 5")
+
+func test_chokepoint_greedy_play_holds_the_reactor() -> void:
+	var s := BattleState.new(Mission.the_chokepoint())
+	var guard := 0
+	while s.phase == BattleState.Phase.PLAYER and guard < 40:
+		guard += 1
+		_greedy_player_turn(s)
+		if s.phase != BattleState.Phase.PLAYER:
+			break
+		s.end_player_turn()
+	assert_eq(s.phase, BattleState.Phase.WON, "an active player holds the reactor for 5 turns")
+	assert_gt(s.reactor.hp, 0)
+	assert_true(s.turns_survived >= s.data.turn_limit)
+
+func test_chokepoint_killing_every_enemy_is_not_required() -> void:
+	var s := BattleState.new(Mission.the_chokepoint())
+	s.turns_survived = s.data.turn_limit - 1
+	assert_gt(s.living_enemies().size(), 0)
+	s.end_player_turn()
+	assert_eq(s.phase, BattleState.Phase.WON)
+	assert_gt(s.living_enemies().size(), 0, "holding the reactor was enough")
+
+func test_chokepoint_reactor_destroyed_is_a_loss() -> void:
+	var s := BattleState.new(Mission.the_chokepoint())
+	s.damage_reactor(s.reactor.hp)
+	assert_true(s._check_end())
+	assert_eq(s.phase, BattleState.Phase.LOST)
+
 # ------------------------------------------------------------------- greedy bot
 
 func _greedy_player_turn(s: BattleState) -> void:
@@ -173,9 +212,11 @@ func _greedy_one_action(s: BattleState, mech: Unit) -> bool:
 		if best_cell.x > -999 and s.player_action(mech, "grapple", best_cell):
 			return true
 
-	# 5. otherwise close on the enemy nearest the reactor
+	# 5. otherwise close on the enemy nearest the reactor, walking the real path
 	var target := _nearest_to(enemies, s.reactor.pos)
-	var dest := _closest_reachable(s, mech, target.pos)
+	var dest := _step_toward(s, mech, target.pos)
+	if dest == mech.pos:
+		dest = _step_toward(s, mech, s.reactor.pos)   # no route to a foe: fall back on the reactor
 	if dest != mech.pos and s.player_move(mech, dest):
 		return true
 	return false
@@ -194,12 +235,16 @@ func _nearest_to(units: Array[Unit], pos: Vector2i) -> Unit:
 			best = u
 	return best
 
-func _closest_reachable(s: BattleState, mech: Unit, goal: Vector2i) -> Vector2i:
+## Walk as far along the shortest real path toward `goal` as move + reachability
+## allow. Robust on a divided map where a manhattan step can point into a wall.
+func _step_toward(s: BattleState, mech: Unit, goal: Vector2i) -> Vector2i:
+	var blocked := s.blocked_for_move()
+	var path := s.grid.find_path(mech.pos, goal, blocked)
+	if path.is_empty():
+		return mech.pos
+	var reach := s.reachable_for(mech)
 	var best := mech.pos
-	var best_d := Grid.manhattan(mech.pos, goal)
-	for cell: Vector2i in s.reachable_for(mech).keys():
-		var d := Grid.manhattan(cell, goal)
-		if d < best_d:
-			best_d = d
-			best = cell
+	for i: int in mini(path.size(), mech.move_range):
+		if reach.has(path[i]):
+			best = path[i]
 	return best
