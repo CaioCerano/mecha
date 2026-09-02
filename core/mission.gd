@@ -165,12 +165,16 @@ static func the_chokepoint() -> MissionData:
 	m.objective_optional = "Keep all three mechs operational"
 
 	m.walls = [
-		# the divider -- gaps at cols 2-3 (west), cols 6-7 (centre), cols 8-9 (east)
+		# the divider -- three two-wide gaps: WEST (cols 2-3), CENTRE (cols 6-7),
+		# EAST (cols 10-11). One body / one shield narrows a lane, never seals it.
 		Vector2i(0, 4), Vector2i(1, 4), Vector2i(4, 4), Vector2i(5, 4),
-		Vector2i(10, 4), Vector2i(11, 4),
+		Vector2i(8, 4), Vector2i(9, 4),
 		# reactor chamber -- one nub W and E of the reactor so a flank lane can't
-		# slide straight in along row 6
+		# slide straight in along row 6; also a slam surface for a Bash
 		Vector2i(4, 6), Vector2i(8, 6),
+		# flank doglegs -- bend the west and east lanes south so they take real
+		# time to arrive (the window for Lancer to range over, Grappler to reel)
+		Vector2i(3, 7), Vector2i(9, 7),
 	]
 	m.pits = [
 		Vector2i(5, 5),   # NW shoulder of the centre lane -- shove a centre enemy in
@@ -187,9 +191,9 @@ static func the_chokepoint() -> MissionData:
 		Unit.Kind.GRAPPLER: Vector2i(9, 9),   # SE -- reels flankers off line
 	}
 	m.initial_enemies = [
-		{"kind": Unit.Kind.GRUNT, "cell": Vector2i(6, 2)},   # centre lane -- fast
-		{"kind": Unit.Kind.GRUNT, "cell": Vector2i(2, 2)},   # west lane
-		{"kind": Unit.Kind.GRUNT, "cell": Vector2i(9, 2)},   # east lane -- all three live turn 1
+		{"kind": Unit.Kind.GRUNT, "cell": Vector2i(6, 2)},    # centre lane
+		{"kind": Unit.Kind.GRUNT, "cell": Vector2i(2, 2)},    # west lane
+		{"kind": Unit.Kind.GRUNT, "cell": Vector2i(10, 2)},   # east lane -- all three live turn 1
 	]
 
 	# cycled round-robin as waves are announced (see schedule order below)

@@ -196,12 +196,14 @@ support a *meaningfully different* tactical puzzle without new mechanics.
   (`Hud.mission_selected(id)` → `battle.gd` sets `mission_id`, restarts). No
   campaign flow; `battle.gd` never names a mission, it just reads `mission_id`.
 - **`Mission.the_chokepoint()`** — one east-west divider wall with three
-  two-wide gaps (west / centre / east). Centre is a clean straight line from
-  the north edge to the reactor and the only lane both reinforcement Chargers
-  use. Two pits on the centre lane's *shoulders* (a shove, not a walk, feeds
-  them); two barrels beside the reactor's flank approaches (cluster clear, but
-  a squad start tile sits in each blast). Three grunts live from turn 1, one
-  per lane; roster drops the Artillery. 5-turn hold, same as Reactor Breach.
+  two-wide gaps (west cols 2-3 / centre cols 6-7 / east cols 10-11) and a short
+  dogleg on each flank. Centre is a clean straight line from the north edge to
+  the reactor and the only lane both reinforcement Chargers use. Two pits on
+  the centre lane's *shoulders* ((5,5)/(7,5) — a shove, not a walk, feeds
+  them); two barrels beside the reactor's flank approaches ((5,7)/(7,7) —
+  cluster clear, but a squad start tile sits in each blast). Two chamber nubs
+  ((4,6)/(8,6)) keep the flanks from sliding straight in. Three grunts live
+  from turn 1, one per lane; roster drops the Artillery. 5-turn hold.
 - **Telemetry** — `note_death` now tags kills by cause; the summary prints
   `killed: N (direct · pit · blast · slam)` so a run shows how much of the
   work was positioning vs. damage.
@@ -215,10 +217,12 @@ support a *meaningfully different* tactical puzzle without new mechanics.
 
 - **Reactor Breach** — passive → DEFEAT (reactor gone turn 4); greedy → VICTORY,
   reactor ~1–2/12, squad intact.
-- **The Chokepoint** — passive → DEFEAT turn 4; damage-only play (melee + spear,
-  no repositioning) → scrapes a VICTORY at reactor 3/12 **and loses a mech**;
-  play that uses grapple / pits → comfortable VICTORY, squad intact. The gap
-  between the last two is the point of the mission.
+- **The Chokepoint** — passive → DEFEAT (reactor gone on the turn-4 enemy
+  phase). A damage-only bot (melee + spear, no repositioning) → also DEFEAT,
+  one turn short. A bot that grapples / feeds the shoulder pits → VICTORY, tight
+  at reactor 3/12, squad intact — and the win is *carried by positioning*: of
+  5 enemy kills, 1 pit + 4 slam + 0 direct; collision damage ≈ direct damage.
+  Pure damage does not hold this map; displacement does.
 
 ## Known rough edges / next iteration candidates
 
@@ -247,6 +251,8 @@ support a *meaningfully different* tactical puzzle without new mechanics.
 - No sound. Placeholder shapes only, as intended.
 - Balance constants (`mission.gd`, `mech_actions.gd`, `enemy_ai.gd`) are still
   first-pass — tune against real playtests.
-- The Chokepoint's crude positioning-bot probe wins at reactor 9/12 — softer
-  than Reactor Breach's greedy (1–2/12). Real difficulty rests on the
-  damage-only-loses-a-mech gap; wants a human playtest to confirm it bites.
+- The Chokepoint sits right on the win/loss line for the crude probe bots —
+  small schedule perturbations flip the positioning bot between a 3/12 win and
+  a one-turn loss. Deliberately tuned by geometry/timing, not stats; wants a
+  human playtest to confirm the "damage stalls / displacement holds" gap feels
+  fair rather than punishing.
