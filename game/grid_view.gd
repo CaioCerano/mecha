@@ -4,8 +4,8 @@ extends Node2D
 ## Draws the terrain: a flat 12x12 checkerboard with dark wall tiles. Also the
 ## single source of truth for grid<->pixel conversion (all view nodes use it).
 
-const CELL: int = 44
-const ORIGIN: Vector2 = Vector2(48, 92)
+const CELL: int = 64
+const ORIGIN: Vector2 = Vector2(40, 36)
 
 const FLOOR_A: Color = Color(0.20, 0.22, 0.28)
 const FLOOR_B: Color = Color(0.24, 0.26, 0.32)

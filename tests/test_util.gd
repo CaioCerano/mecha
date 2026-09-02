@@ -10,8 +10,11 @@ static func bare_state() -> BattleState:
 	s.units.clear()
 	s.occupancy.clear()
 	s.telegraphs.clear()
-	s.pending_mortars.clear()
+	s.pending_spawns.clear()
 	s.events.clear()
+	# reset the board to reactor-only; terrain tests add pits / barrels explicitly
+	s.objects.clear()
+	s.objects[s.reactor.pos] = s.reactor
 	s._next_id = 1
 	return s
 

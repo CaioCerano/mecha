@@ -17,7 +17,7 @@ func test_greedy_player_survives_the_mission() -> void:
 		s.end_player_turn()
 	assert_eq(s.phase, BattleState.Phase.WON, "greedy play holds the reactor for 5 turns")
 	assert_gt(s.reactor.hp, 0)
-	assert_true(s.turns_survived >= Mission.SURVIVE_TURNS)
+	assert_true(s.turns_survived >= s.data.turn_limit)
 
 func test_reactor_destroyed_is_a_loss() -> void:
 	var s := BattleState.new()
@@ -32,9 +32,81 @@ func test_all_mechs_destroyed_is_a_loss() -> void:
 	assert_true(s._check_end())
 	assert_eq(s.phase, BattleState.Phase.LOST)
 
+# ------------------------------------------------------------------- Reactor Breach
+
+func test_reactor_breach_initializes_squad_terrain_and_reactor() -> void:
+	var s := BattleState.new()   # default = Mission.reactor_breach()
+	assert_eq(s.data.id, "reactor_breach")
+	assert_eq(s.data.turn_limit, 5)
+	# squad
+	var kinds: Array = []
+	for m: Unit in s.player_mechs():
+		kinds.append(m.kind)
+	assert_eq(s.player_mechs().size(), 3)
+	assert_true(Unit.Kind.LANCER in kinds and Unit.Kind.BULWARK in kinds and Unit.Kind.GRAPPLER in kinds)
+	# initial enemies
+	assert_eq(s.living_enemies().size(), 2, "two grunts on the board at start")
+	for e: Unit in s.living_enemies():
+		assert_eq(e.kind, Unit.Kind.GRUNT)
+	# terrain
+	assert_eq(s.object_at(Vector2i(6, 3)).kind, GridObject.Kind.PIT)
+	assert_eq(s.object_at(Vector2i(9, 3)).kind, GridObject.Kind.PIT)
+	assert_eq(s.object_at(Vector2i(4, 5)).kind, GridObject.Kind.EXPLOSIVE)
+	assert_eq(s.object_at(Vector2i(9, 6)).kind, GridObject.Kind.EXPLOSIVE)
+	assert_true(s.grid.is_wall(Vector2i(3, 3)))
+	# reactor
+	assert_eq(s.reactor.pos, Vector2i(6, 6))
+	assert_eq(s.reactor.max_hp, 12)
+
+func test_reactor_breach_reinforcements_announced_then_arrive() -> void:
+	var s := BattleState.new()
+	assert_eq(s.pending_spawns.size(), 0, "nothing telegraphed on turn 1")
+	s.end_player_turn()               # -> player phase 2
+	assert_eq(s.turn_number, 2)
+	var announced: int = s.pending_spawns.size()
+	assert_eq(announced, 2, "wave 2 (Charger + Artillery) announced on player phase 2")
+	for sp: Dictionary in s.pending_spawns:
+		assert_eq(sp["arrive_on_turn"], 2)
+	var before: int = s.living_enemies().size()
+	s.end_player_turn()               # enemy phase 2: wave 2 enters -> player phase 3
+	assert_eq(s.living_enemies().size(), before + announced, "wave 2 is now on the board")
+	for sp: Dictionary in s.pending_spawns:
+		assert_eq(sp["arrive_on_turn"], 3, "wave 2 is no longer pending; only wave 3 is")
+
+func test_killing_every_enemy_is_not_required_for_victory() -> void:
+	var s := BattleState.new()
+	s.turns_survived = s.data.turn_limit - 1
+	assert_gt(s.living_enemies().size(), 0)
+	s.end_player_turn()               # one more enemy phase -> turns_survived hits the limit
+	assert_eq(s.phase, BattleState.Phase.WON)
+	assert_gt(s.living_enemies().size(), 0, "enemies still alive -- holding the reactor was enough")
+
+func test_optional_objective_tracks_squad() -> void:
+	var s := BattleState.new()
+	assert_true(s.optional_objective_met(), "all three mechs operational at start")
+	s.damage_unit(s.player_mechs()[0], 999)
+	assert_false(s.optional_objective_met(), "a destroyed mech fails the optional objective")
+
+func test_restart_returns_to_deterministic_initial_state() -> void:
+	var a := BattleState.new()
+	a.end_player_turn()
+	a.end_player_turn()               # advance a couple of phases
+	var b := BattleState.new()        # "restart" == a fresh BattleState
+	assert_eq(b.turn_number, 1)
+	assert_eq(b.turns_survived, 0)
+	assert_eq(b.reactor.hp, b.reactor.max_hp)
+	assert_eq(b.living_enemies().size(), 2)
+	var b0 := BattleState.new()       # two fresh states must be identical
+	assert_eq(b.living_enemies().size(), b0.living_enemies().size())
+	for i in b.living_enemies().size():
+		assert_eq(b.living_enemies()[i].pos, b0.living_enemies()[i].pos)
+		assert_eq(b.living_enemies()[i].kind, b0.living_enemies()[i].kind)
+	for i in b.player_mechs().size():
+		assert_eq(b.player_mechs()[i].pos, b0.player_mechs()[i].pos)
+
 func test_surviving_five_enemy_turns_with_reactor_alive_wins() -> void:
 	var s := BattleState.new()
-	s.turns_survived = Mission.SURVIVE_TURNS - 1
+	s.turns_survived = s.data.turn_limit - 1
 	# wipe scheduled resistance so the final enemy turn is quiet
 	for id in s.units.keys():
 		var u: Unit = s.units[id]
@@ -59,7 +131,7 @@ func _greedy_one_action(s: BattleState, mech: Unit) -> bool:
 		return false
 	var acts := MechActions.available_actions(s, mech)
 
-	# 1. melee an adjacent enemy
+	# 1. melee an adjacent enemy (thrust / bash both hit and shove)
 	for d: Vector2i in Grid.DIRS:
 		var t := s.unit_at(mech.pos + d)
 		if t != null and not t.is_player():
@@ -67,25 +139,42 @@ func _greedy_one_action(s: BattleState, mech: Unit) -> bool:
 				if melee in acts and s.player_action(mech, melee, mech.pos + d):
 					return true
 
-	# 2. ranged shot that hits an enemy without clipping the reactor
-	for ranged: String in ["cannon", "throw_spear"]:
-		if not ranged in acts:
-			continue
-		for cell: Vector2i in ActionPreview.valid_targets(s, mech, ranged):
-			var p := ActionPreview.build(s, mech, ranged, cell)
-			if p.valid and not p.hits_reactor and _has_enemy(s, p.affected_ids):
-				if s.player_action(mech, ranged, cell):
+	# 2. Grappler: throw an adjacent enemy if it lands farther from the reactor
+	if "throw" in acts:
+		for d: Vector2i in Grid.DIRS:
+			var t := s.unit_at(mech.pos + d)
+			if t == null or t.is_player():
+				continue
+			var tp := ActionPreview.build(s, mech, "throw", mech.pos + d)
+			if tp.valid and Grid.manhattan(tp.push_to, s.reactor.pos) > Grid.manhattan(t.pos, s.reactor.pos):
+				if s.player_action(mech, "throw", mech.pos + d):
 					return true
 
-	# 3. mortar the tile of the enemy nearest the reactor
-	if "mortar" in acts:
-		var focus := _nearest_to(enemies, s.reactor.pos)
-		var mp := ActionPreview.build(s, mech, "mortar", focus.pos)
-		if mp.valid and not mp.hits_reactor and s.player_action(mech, "mortar", focus.pos):
+	# 3. ranged spear that hits an enemy without clipping the reactor
+	if "throw_spear" in acts:
+		for cell: Vector2i in ActionPreview.valid_targets(s, mech, "throw_spear"):
+			var p := ActionPreview.build(s, mech, "throw_spear", cell)
+			if p.valid and not p.hits_reactor and _has_enemy(s, p.affected_ids):
+				if s.player_action(mech, "throw_spear", cell):
+					return true
+
+	# 4. Grappler: reel in the enemy closest to the reactor to stall its advance
+	if "grapple" in acts:
+		var best_cell := Vector2i(-999, -999)
+		var best_d := 1 << 30
+		for cell: Vector2i in ActionPreview.valid_targets(s, mech, "grapple"):
+			var u := s.unit_at(cell)
+			if u == null or u.is_player():
+				continue
+			var gd := Grid.manhattan(cell, s.reactor.pos)
+			if gd < best_d:
+				best_d = gd
+				best_cell = cell
+		if best_cell.x > -999 and s.player_action(mech, "grapple", best_cell):
 			return true
 
-	# 4. otherwise close on the nearest enemy
-	var target := _nearest_to(enemies, mech.pos)
+	# 5. otherwise close on the enemy nearest the reactor
+	var target := _nearest_to(enemies, s.reactor.pos)
 	var dest := _closest_reachable(s, mech, target.pos)
 	if dest != mech.pos and s.player_move(mech, dest):
 		return true

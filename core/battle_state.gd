@@ -13,10 +13,17 @@ var units: Dictionary[int, Unit] = {}
 var occupancy: Dictionary[Vector2i, int] = {}      # cell -> unit id (spec: kept separate)
 var objects: Dictionary[Vector2i, GridObject] = {} # cell -> spear / shield / reactor
 var telegraphs: Array[Telegraph] = []
-## Player mortars in flight: [{ "cells": Array[Vector2i], "damage": int, "resolve_on_turn": int }]
-var pending_mortars: Array = []
+## Reinforcements announced but not yet on the board. Each:
+##   { kind: Unit.Kind, cell: Vector2i, edge_dir: Vector2i, arrive_on_turn: int }
+## Announced at the start of a player phase, they physically enter on the very
+## next enemy phase and only act the enemy phase after that -- so the player
+## always gets a full phase to reposition. No damage from a unit that wasn't
+## already visible (as a real unit or a spawn telegraph) last player phase.
+var pending_spawns: Array = []
 
 var reactor: GridObject
+var data: MissionData
+var tel: Telemetry
 var turn_number: int = 1
 var turns_survived: int = 0
 var phase: Phase = Phase.PLAYER
@@ -27,15 +34,26 @@ var _spawn_index: int = 0
 
 # ----------------------------------------------------------------- construction
 
-func _init() -> void:
-	grid = Grid.new(Mission.GRID_W, Mission.GRID_H, Mission.walls())
-	reactor = GridObject.make_reactor(Mission.REACTOR_POS, Mission.REACTOR_HP)
+func _init(mission_data: MissionData = null) -> void:
+	data = mission_data if mission_data != null else Mission.reactor_breach()
+	tel = Telemetry.new()
+	grid = Grid.new(data.grid_w, data.grid_h, data.walls)
+	reactor = GridObject.make_reactor(data.reactor_pos, data.reactor_hp)
 	objects[reactor.pos] = reactor
-	var starts: Dictionary = Mission.mech_starts()
-	for kind: Unit.Kind in [Unit.Kind.SPEAR, Unit.Kind.SHIELD, Unit.Kind.ARTILLERY]:
-		_spawn_unit(kind, Unit.Team.PLAYER, starts[kind])
+	for p: Vector2i in data.pits:
+		objects[p] = GridObject.make_pit(p)
+	for p: Vector2i in data.barrels:
+		objects[p] = GridObject.make_explosive(p, Mission.EXPLOSIVE_HP)
+	for kind: Unit.Kind in [Unit.Kind.LANCER, Unit.Kind.BULWARK, Unit.Kind.GRAPPLER]:
+		if data.mech_starts.has(kind):
+			_spawn_unit(kind, Unit.Team.PLAYER, data.mech_starts[kind])
 	for m: Unit in player_mechs():
 		m.ap = m.max_ap
+	# Wave 1 (initial_enemies) is on the board from the opening turn so the first
+	# player turn is a real tactical decision. Later waves are telegraphed.
+	for e: Dictionary in data.initial_enemies:
+		_spawn_unit(e["kind"], Unit.Team.ENEMY, e["cell"])
+	events.clear()
 
 func _spawn_unit(kind: Unit.Kind, team: Unit.Team, pos: Vector2i) -> Unit:
 	var u := Unit.new()
@@ -117,7 +135,10 @@ func line_attack(from: Vector2i, dir: Vector2i, max_len: int) -> Dictionary:
 			cells.append(cell)
 			return {"cells": cells, "hit_unit": null, "hit_reactor": true, "hit_pos": cell, "blocked_by_wall": false}
 		if obj != null and obj.blocks_line():
-			return {"cells": cells, "hit_unit": null, "hit_reactor": false, "hit_pos": Vector2i(-1, -1), "blocked_by_wall": false}
+			# an explosive stops the line and can be hit at that cell
+			cells.append(cell)
+			return {"cells": cells, "hit_unit": null, "hit_reactor": false, "hit_pos": cell,
+				"blocked_by_wall": false, "hit_object": obj}
 		var u: Unit = unit_at(cell)
 		if u != null:
 			cells.append(cell)
@@ -134,28 +155,27 @@ func move_unit(unit: Unit, dest: Vector2i) -> void:
 	unit.pos = dest
 	occupancy[dest] = unit.id
 
-func damage_unit(unit: Unit, amount: int) -> int:
+func damage_unit(unit: Unit, amount: int, cause: String = "hit", by_id: int = -1) -> int:
 	if not unit.is_alive():
 		return 0
-	var final: int = amount
-	# Shield mech keeps a -1 damage bonus while its shield is stowed.
-	if unit.kind == Unit.Kind.SHIELD and not unit.shield_deployed:
-		final = maxi(1, amount - 1)
-	final = mini(final, unit.hp)
+	var final: int = mini(unit.mitigate(amount), unit.hp)
 	unit.hp -= final
-	events.append({"t": "damage", "id": unit.id, "pos": unit.pos, "amount": final, "hp": unit.hp})
+	tel.note_damage(self, unit.id, final, cause, by_id)
+	events.append({"t": "damage", "id": unit.id, "pos": unit.pos, "amount": final, "hp": unit.hp, "cause": cause})
 	if not unit.is_alive():
 		if occupancy.get(unit.pos, -1) == unit.id:
 			occupancy.erase(unit.pos)
-		events.append({"t": "death", "id": unit.id, "pos": unit.pos})
+		tel.note_death(self, unit, cause, by_id)
+		events.append({"t": "death", "id": unit.id, "pos": unit.pos, "kind": unit.kind, "cause": cause})
 	return final
 
-func damage_reactor(amount: int) -> void:
+func damage_reactor(amount: int, cause: String = "hit") -> void:
 	if reactor.hp <= 0:
 		return
 	var final: int = mini(amount, reactor.hp)
 	reactor.hp -= final
-	events.append({"t": "reactor_damage", "pos": reactor.pos, "amount": final, "hp": reactor.hp})
+	tel.bump("reactor_damage_taken", final)
+	events.append({"t": "reactor_damage", "pos": reactor.pos, "amount": final, "hp": reactor.hp, "cause": cause})
 
 func place_object(obj: GridObject) -> void:
 	objects[obj.pos] = obj
@@ -170,6 +190,49 @@ func destroy_wall(pos: Vector2i) -> void:
 	if grid.is_wall(pos):
 		grid.set_wall(pos, false)
 		events.append({"t": "wall_destroyed", "pos": pos})
+
+## Damage a destructible object (explosive barrel). Reaching 0 HP detonates it,
+## which is resolved immediately (iterative chain, no recursion). `by_id` is
+## whoever caused the hit, threaded to the blast for telemetry attribution.
+func damage_object(obj: GridObject, amount: int, by_id: int = -1) -> void:
+	if obj == null or not obj.is_destructible() or obj.hp <= 0:
+		return
+	obj.hp -= amount
+	events.append({"t": "object_damage", "pos": obj.pos, "amount": amount, "hp": maxi(obj.hp, 0)})
+	if obj.hp <= 0:
+		detonate([obj.pos], by_id)
+
+## Explode every barrel in `initial`, apply the plus-shaped blast, and chain
+## into any barrel the blast destroys. Deterministic breadth-first drain.
+func detonate(initial: Array[Vector2i], by_id: int = -1) -> void:
+	var queue: Array[Vector2i] = initial.duplicate()
+	var done: Dictionary[Vector2i, bool] = {}
+	var blast_all: Dictionary[Vector2i, bool] = {}
+	while not queue.is_empty():
+		var center: Vector2i = queue.pop_front()
+		if done.get(center, false):
+			continue
+		var e: GridObject = objects.get(center)
+		if e == null or e.kind != GridObject.Kind.EXPLOSIVE:
+			continue
+		done[center] = true
+		objects.erase(center)
+		events.append({"t": "object_destroyed", "pos": center, "kind": e.kind})
+		for c: Vector2i in grid.plus_area(center):
+			blast_all[c] = true
+			var u: Unit = unit_at(c)
+			if u != null:
+				damage_unit(u, Mission.EXPLOSIVE_DMG, "explosion", by_id)
+			if reactor.pos == c:
+				damage_reactor(Mission.EXPLOSIVE_DMG, "explosion")
+			var chained: GridObject = objects.get(c)
+			if chained != null and chained.kind == GridObject.Kind.EXPLOSIVE and not done.get(c, false):
+				chained.hp -= Mission.EXPLOSIVE_DMG
+				if chained.hp <= 0:
+					queue.append(c)
+	tel.bump("explosions")
+	tel.bump("barrels_triggered", done.size())
+	events.append({"t": "explosion", "cells": blast_all.keys()})
 
 func take_events() -> Array:
 	var out: Array = events
@@ -189,9 +252,10 @@ func player_move(unit: Unit, dest: Vector2i) -> bool:
 	move_unit(unit, dest)
 	events.append({"t": "move", "id": unit.id, "path": path})
 	unit.ap -= 1
+	tel.note_action(unit.kind, "move")
 	return true
 
-func player_action(unit: Unit, action_id: String, target_cell: Vector2i) -> bool:
+func player_action(unit: Unit, action_id: String, target_cell: Vector2i, opts: Dictionary = {}) -> bool:
 	if phase != Phase.PLAYER or not unit.is_alive():
 		return false
 	var free: bool = MechActions.is_free(action_id)
@@ -199,11 +263,12 @@ func player_action(unit: Unit, action_id: String, target_cell: Vector2i) -> bool
 		return false
 	if not action_id in MechActions.available_actions(self, unit):
 		return false
-	if not ActionPreview.build(self, unit, action_id, target_cell).valid:
+	if not ActionPreview.build(self, unit, action_id, target_cell, opts).valid:
 		return false
-	MechActions.execute(self, unit, action_id, target_cell)
+	MechActions.execute(self, unit, action_id, target_cell, opts)
 	if not free:
 		unit.ap -= 1
+	tel.note_action(unit.kind, action_id)
 	_check_end()
 	return true
 
@@ -217,7 +282,15 @@ func end_player_turn() -> void:
 # ----------------------------------------------------------------- enemy turn
 
 func _run_enemy_turn() -> void:
-	_spawn_for_turn(turn_number)
+	# Freeze the acting set BEFORE reinforcements land -- a unit that enters this
+	# phase waits until next phase to do anything.
+	var can_act: Array[int] = []
+	for id: int in _sorted_ids():
+		var u: Unit = units[id]
+		if not u.is_player() and u.is_alive():
+			can_act.append(id)
+
+	_resolve_due_spawns()
 
 	var due: Array[Telegraph] = []
 	for tg: Telegraph in telegraphs:
@@ -229,9 +302,9 @@ func _run_enemy_turn() -> void:
 	if _check_end():
 		return
 
-	for id: int in _sorted_ids():
-		var u: Unit = units[id]
-		if u.is_player() or not u.is_alive():
+	for id: int in can_act:
+		var u: Unit = units.get(id)
+		if u == null or not u.is_alive():
 			continue
 		EnemyAi.act(self, u)
 		if _check_end():
@@ -249,39 +322,50 @@ func _start_player_turn() -> void:
 	for m: Unit in player_mechs():
 		if m.is_alive():
 			m.ap = m.max_ap
-	_resolve_pending_mortars()
+	_announce_spawns(turn_number)
 	_check_end()
 
-func _resolve_pending_mortars() -> void:
-	var still_pending: Array = []
-	for pm: Dictionary in pending_mortars:
-		if pm["resolve_on_turn"] != turn_number:
-			still_pending.append(pm)
-			continue
-		var cells: Array = pm["cells"]
-		for c: Vector2i in cells:
-			destroy_wall(c)
-			var u: Unit = unit_at(c)
-			if u != null:
-				damage_unit(u, pm["damage"])
-			if reactor.pos == c:
-				damage_reactor(pm["damage"])
-		events.append({"t": "mortar_resolve", "cells": cells})
-	pending_mortars = still_pending
-
-func _spawn_for_turn(turn: int) -> void:
-	var schedule: Dictionary = Mission.spawn_schedule()
+## Wave 1 (data.initial_enemies) is placed on the board directly (see _init).
+## Every later wave is announced here at the top of its player phase, enters
+## next enemy phase.
+func _announce_spawns(turn: int) -> void:
+	var schedule: Dictionary = data.spawn_schedule
 	if not schedule.has(turn):
 		return
-	var points: Array[Vector2i] = Mission.spawn_points()
+	var points: Array[Vector2i] = data.spawn_points
 	for kind: Unit.Kind in schedule[turn]:
 		var anchor: Vector2i = points[_spawn_index % points.size()]
 		_spawn_index += 1
-		var cell: Vector2i = _nearest_free_cell(anchor)
-		if cell == Vector2i(-1, -1):
+		pending_spawns.append({
+			"kind": kind,
+			"cell": anchor,
+			"edge_dir": _entry_dir(anchor, reactor.pos),
+			"arrive_on_turn": turn,
+		})
+		events.append({"t": "spawn_telegraph", "cell": anchor, "kind": kind})
+
+## Bring in every reinforcement whose arrival phase is now. They do NOT act
+## this phase (see _run_enemy_turn's frozen acting set).
+func _resolve_due_spawns() -> void:
+	var still: Array = []
+	for sp: Dictionary in pending_spawns:
+		if sp["arrive_on_turn"] != turn_number:
+			still.append(sp)
 			continue
-		var u: Unit = _spawn_unit(kind, Unit.Team.ENEMY, cell)
-		events.append({"t": "spawn", "id": u.id, "pos": cell, "kind": kind})
+		var cell: Vector2i = _nearest_free_cell(sp["cell"])
+		if cell == Vector2i(-1, -1):
+			still.append(sp)   # totally boxed in -- try again next phase
+			continue
+		var u: Unit = _spawn_unit(sp["kind"], Unit.Team.ENEMY, cell)
+		events.append({"t": "spawn", "id": u.id, "pos": cell, "kind": sp["kind"]})
+	pending_spawns = still
+
+static func _entry_dir(from: Vector2i, goal: Vector2i) -> Vector2i:
+	var dx: int = goal.x - from.x
+	var dy: int = goal.y - from.y
+	if absi(dx) >= absi(dy):
+		return Vector2i(signi(dx), 0)
+	return Vector2i(0, signi(dy))
 
 func _nearest_free_cell(anchor: Vector2i) -> Vector2i:
 	var blocked: Dictionary[Vector2i, bool] = blocked_for_move()
@@ -304,28 +388,41 @@ func _resolve_telegraph(tg: Telegraph) -> void:
 	if tg.kind == Telegraph.Kind.CHARGE_LINE:
 		if owner == null or not owner.is_alive():
 			return
-		var la: Dictionary = line_attack(owner.pos, tg.charge_dir, EnemyAi.CHARGER_RANGE)
-		var travelled: Array[Vector2i] = la["cells"]
-		var dest: Vector2i = owner.pos
-		for c: Vector2i in travelled:
-			if unit_at(c) == null and (object_at(c) == null or not object_at(c).blocks_move()):
-				dest = c
+		# ONE charge geometry, shared with Intent.project's prediction.
+		var oc: Dictionary = Intent.charge_outcome(self, owner.pos, tg.charge_dir, {}, [])
+		var dest: Vector2i = oc["stop"]
 		if dest != owner.pos:
 			move_unit(owner, dest)
 			events.append({"t": "charge_move", "id": owner.id, "to": dest})
-		if la["hit_unit"] != null:
-			damage_unit(la["hit_unit"], tg.damage)
-		elif la["hit_reactor"]:
-			damage_reactor(tg.damage)
 		owner.charge_state = Unit.ChargeState.READY
-		events.append({"t": "telegraph_resolve", "kind": "charge", "cells": travelled})
+		if oc["pit"]:
+			damage_unit(owner, Mission.PIT_DAMAGE, "pit", -1)
+			tel.bump("charges_blocked")
+			events.append({"t": "charge_result", "id": owner.id, "hit": false, "pit": true})
+			events.append({"t": "telegraph_resolve", "kind": "charge", "cells": oc["cells"]})
+			return
+		var ahead: Vector2i = dest + tg.charge_dir
+		var struck: Unit = unit_at(ahead)
+		var aobj: GridObject = object_at(ahead)
+		var did_hit: bool = true
+		if struck != null:
+			damage_unit(struck, tg.damage, "charge", owner.id)
+		elif aobj != null and aobj.is_destructible():
+			damage_object(aobj, tg.damage, -1)
+		elif reactor.pos == ahead:
+			damage_reactor(tg.damage, "charge")
+		else:
+			did_hit = false
+			tel.bump("charges_blocked")
+		events.append({"t": "charge_result", "id": owner.id, "hit": did_hit, "pit": false})
+		events.append({"t": "telegraph_resolve", "kind": "charge", "cells": oc["cells"]})
 	else:
 		for c: Vector2i in tg.cells:
 			var u: Unit = unit_at(c)
 			if u != null:
-				damage_unit(u, tg.damage)
+				damage_unit(u, tg.damage, "aoe", tg.owner_id)
 			if reactor.pos == c:
-				damage_reactor(tg.damage)
+				damage_reactor(tg.damage, "aoe")
 		if owner != null:
 			owner.charge_state = Unit.ChargeState.READY
 		events.append({"t": "telegraph_resolve", "kind": "aoe", "cells": tg.cells})
@@ -335,22 +432,33 @@ func _resolve_telegraph(tg: Telegraph) -> void:
 func _check_end() -> bool:
 	if phase == Phase.WON or phase == Phase.LOST:
 		return true
-	if reactor.hp <= 0:
+	if data.defeat_if_reactor_destroyed and reactor.hp <= 0:
 		_end_game(false)
 		return true
-	var any_mech_alive: bool = false
-	for m: Unit in player_mechs():
-		if m.is_alive():
-			any_mech_alive = true
-			break
-	if not any_mech_alive:
-		_end_game(false)
-		return true
-	if turns_survived >= Mission.SURVIVE_TURNS:
+	if data.defeat_if_squad_lost:
+		var any_mech_alive: bool = false
+		for m: Unit in player_mechs():
+			if m.is_alive():
+				any_mech_alive = true
+				break
+		if not any_mech_alive:
+			_end_game(false)
+			return true
+	if turns_survived >= data.turn_limit:
 		_end_game(true)
 		return true
 	return false
 
+## Optional objective for Reactor Breach: all three mechs still operational.
+func optional_objective_met() -> bool:
+	if data.objective_optional == "":
+		return true
+	for m: Unit in player_mechs():
+		if not m.is_alive():
+			return false
+	return true
+
 func _end_game(won: bool) -> void:
 	phase = Phase.WON if won else Phase.LOST
+	tel.finalize(self, won)
 	events.append({"t": "game_over", "won": won})

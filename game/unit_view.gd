@@ -1,67 +1,130 @@
 class_name UnitView
 extends Node2D
 
-## One mech or enemy: a colored shape sized by kind, an HP label, a selection
-## ring, and small tween helpers for move / lunge / push / damage / death.
+## One mech or enemy: a colored shape sized by kind, a compact HP bar, AP pips
+## (mechs), a selection ring, and small tween helpers for move / lunge / push /
+## damage / death. Exact HP is drawn only while the unit is selected or hovered
+## — combat should read from the bars, not from numbers.
 
 const R: float = GridView.CELL * 0.34
 
 const COLORS: Dictionary = {
-	Unit.Kind.SPEAR: Color(0.30, 0.55, 1.00),
-	Unit.Kind.SHIELD: Color(0.32, 0.80, 0.42),
-	Unit.Kind.ARTILLERY: Color(0.96, 0.84, 0.24),
+	Unit.Kind.LANCER: Color(0.30, 0.55, 1.00),
+	Unit.Kind.BULWARK: Color(0.32, 0.80, 0.42),
+	Unit.Kind.GRAPPLER: Color(0.95, 0.62, 0.24),
 	Unit.Kind.GRUNT: Color(0.90, 0.30, 0.30),
 	Unit.Kind.CHARGER: Color(0.78, 0.18, 0.22),
 	Unit.Kind.ARTILLERY_ENEMY: Color(0.95, 0.45, 0.20),
+	Unit.Kind.INTERCEPTOR: Color(0.95, 0.25, 0.55),
 }
 
 var unit: Unit
 var selected: bool = false
-var _label: Label
+var hovered: bool = false
 
 func setup(u: Unit) -> void:
 	unit = u
 	position = GridView.cell_to_world(u.pos)
-	_label = Label.new()
-	_label.add_theme_font_size_override("font_size", 14)
-	_label.add_theme_color_override("font_color", Color.WHITE)
-	_label.add_theme_color_override("font_outline_color", Color.BLACK)
-	_label.add_theme_constant_override("outline_size", 4)
-	_label.position = Vector2(-R, -R - 16)
-	_label.size = Vector2(R * 2, 16)
-	_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	add_child(_label)
 	refresh()
 
 func refresh() -> void:
 	visible = unit.is_alive()
-	_label.text = "%d" % unit.hp
 	queue_redraw()
 
 func set_selected(value: bool) -> void:
+	if selected == value:
+		return
 	selected = value
+	queue_redraw()
+
+func set_hovered(value: bool) -> void:
+	if hovered == value:
+		return
+	hovered = value
 	queue_redraw()
 
 func _draw() -> void:
 	if unit == null:
 		return
 	var col: Color = COLORS.get(unit.kind, Color.MAGENTA)
+
 	if selected:
-		draw_arc(Vector2.ZERO, R + 6.0, 0.0, TAU, 32, Color.WHITE, 3.0, true)
+		draw_arc(Vector2.ZERO, R + 7.0, 0.0, TAU, 40, Color.WHITE, 3.0, true)
+	elif hovered:
+		draw_arc(Vector2.ZERO, R + 7.0, 0.0, TAU, 40, Color(1, 1, 1, 0.4), 2.0, true)
 
 	if unit.is_player():
 		draw_circle(Vector2.ZERO, R, col)
-		if unit.kind == Unit.Kind.SPEAR and unit.has_spear:
+		if unit.kind == Unit.Kind.LANCER and unit.has_spear:
 			draw_line(Vector2(-R * 0.2, -R * 1.3), Vector2(R * 0.2, R * 1.3), Color(0.85, 0.9, 1.0), 3.0)
-		if unit.kind == Unit.Kind.SHIELD and not unit.shield_deployed:
+		if unit.kind == Unit.Kind.BULWARK and not unit.shield_deployed:
 			draw_arc(Vector2.ZERO, R + 3.0, PI * 0.15, PI * 0.85, 16, Color(0.7, 1.0, 0.8), 3.0)
+		if unit.kind == Unit.Kind.GRAPPLER:
+			draw_arc(Vector2.ZERO, R * 0.55, PI * 0.25, PI * 1.75, 20, Color(1.0, 0.9, 0.75), 3.0)
 	else:
 		var pts: PackedVector2Array
 		if unit.kind == Unit.Kind.CHARGER:
 			pts = PackedVector2Array([Vector2(-R, -R), Vector2(R, 0), Vector2(-R, R)])
+		elif unit.kind == Unit.Kind.INTERCEPTOR:
+			pts = PackedVector2Array([Vector2(0, -R), Vector2(R, 0), Vector2(0, R), Vector2(-R, 0)])
 		else:
 			pts = PackedVector2Array([Vector2(0, -R), Vector2(R, R), Vector2(-R, R)])
 		draw_colored_polygon(pts, col)
+		if unit.kind == Unit.Kind.INTERCEPTOR:
+			draw_arc(Vector2.ZERO, R * 0.42, 0.0, TAU, 16, Color(1, 1, 1, 0.7), 2.0)
+
+	_draw_hp_bar()
+	if unit.is_player():
+		_draw_ap_pips()
+	if selected or hovered:
+		_draw_hp_number()
+
+func _draw_hp_bar() -> void:
+	var w: float = R * 2.0
+	var h: float = 5.0
+	var top_left := Vector2(-w * 0.5, -R - 13.0)
+	var ratio: float = clampf(float(unit.hp) / float(maxi(unit.max_hp, 1)), 0.0, 1.0)
+	draw_rect(Rect2(top_left - Vector2(1, 1), Vector2(w + 2, h + 2)), Color(0, 0, 0, 0.75))
+	draw_rect(Rect2(top_left, Vector2(w, h)), Color(0.20, 0.20, 0.24))
+	var fill: Color = Color(0.35, 0.80, 0.40) if unit.is_player() else Color(0.85, 0.35, 0.30)
+	if ratio <= 0.34:
+		fill = Color(0.90, 0.30, 0.25)
+	elif ratio <= 0.67 and unit.is_player():
+		fill = Color(0.90, 0.75, 0.30)
+	draw_rect(Rect2(top_left, Vector2(w * ratio, h)), fill)
+	# segment ticks so you can read exact HP at a glance
+	if unit.max_hp > 1 and unit.max_hp <= 12:
+		for k: int in range(1, unit.max_hp):
+			var x: float = top_left.x + w * (float(k) / unit.max_hp)
+			draw_line(Vector2(x, top_left.y), Vector2(x, top_left.y + h), Color(0, 0, 0, 0.55), 1.0)
+
+func _draw_ap_pips() -> void:
+	var n: int = unit.max_ap
+	if n <= 0:
+		return
+	var gap: float = 12.0
+	var start_x: float = -gap * (n - 1) * 0.5
+	var y: float = R + 11.0
+	for k: int in range(n):
+		var c := Vector2(start_x + k * gap, y)
+		var filled: bool = k < unit.ap
+		var d: float = 4.5
+		var diamond := PackedVector2Array([
+			c + Vector2(0, -d), c + Vector2(d, 0), c + Vector2(0, d), c + Vector2(-d, 0)])
+		if filled:
+			draw_colored_polygon(diamond, Color(0.55, 0.85, 1.0))
+		else:
+			draw_polyline(diamond + PackedVector2Array([diamond[0]]), Color(0.45, 0.5, 0.6), 1.5)
+
+func _draw_hp_number() -> void:
+	var font := ThemeDB.fallback_font
+	var txt: String = "%d/%d" % [maxi(unit.hp, 0), unit.max_hp]
+	var sz: int = 13
+	var tw: float = font.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1, sz).x
+	var pos := Vector2(-tw * 0.5, -R - 20.0)
+	for o: Vector2 in [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1)]:
+		draw_string(font, pos + o * 1.5, txt, HORIZONTAL_ALIGNMENT_LEFT, -1, sz, Color(0, 0, 0, 0.9))
+	draw_string(font, pos, txt, HORIZONTAL_ALIGNMENT_LEFT, -1, sz, Color.WHITE)
 
 # ---------------------------------------------------------------- animations
 

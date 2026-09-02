@@ -1,0 +1,4 @@
+* text=auto
+*.gd text eol=lf
+*.godot text eol=lf
+*.md text eol=lf

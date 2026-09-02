@@ -48,7 +48,7 @@ func test_line_attack_stops_at_wall_then_unit_then_reactor() -> void:
 	# clear the mission walls that would interfere, we set our own
 	for w in s.grid.wall_cells():
 		s.grid.set_wall(w, false)
-	var shooter := TestUtil.add(s, Unit.Kind.ARTILLERY, Unit.Team.PLAYER, Vector2i(1, 1))
+	var shooter := TestUtil.add(s, Unit.Kind.GRAPPLER, Unit.Team.PLAYER, Vector2i(1, 1))
 	var target := TestUtil.add(s, Unit.Kind.GRUNT, Unit.Team.ENEMY, Vector2i(4, 1))
 
 	var la := s.line_attack(shooter.pos, Vector2i(1, 0), 8)
