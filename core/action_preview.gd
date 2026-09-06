@@ -12,6 +12,7 @@ const NONE: Vector2i = Vector2i(-9999, -9999)
 
 class Preview:
 	extends RefCounted
+	var outcome_state: BattleState
 	var valid: bool = false
 	var target_cells: Array[Vector2i] = []   # the cell(s) the player is aiming at
 	var line_cells: Array[Vector2i] = []     # attack / tether lane travelled
@@ -74,7 +75,25 @@ class Preview:
 ## Every cell the player is allowed to click for this action right now.
 static func valid_targets(state: BattleState, unit: Unit, action_id: String) -> Array[Vector2i]:
 	var out: Array[Vector2i] = []
+	if action_id not in MechActions.available_actions(state, unit):
+		return out
 	match action_id:
+		"brace", "engineer_repair":
+			out.append(unit.pos)
+		"repulsor_plate":
+			for d: Vector2i in Grid.DIRS:
+				var victim := state.unit_at(unit.pos + d)
+				if victim != null and not victim.is_player():
+					out.append(victim.pos)
+		"tow_cable", "emergency_winch":
+			for ally: Unit in state.player_mechs():
+				if not MechActions.rescue_dests(state, unit, ally.pos, action_id).is_empty():
+					out.append(ally.pos)
+		"anchor_shot":
+			for d: Vector2i in Grid.DIRS:
+				for c: Vector2i in state.line_attack(unit.pos, d, 3).cells:
+					if state.unit_at(c) == null and state.object_at(c) == null and not state.grid.is_wall(c):
+						out.append(c)
 		"thrust", "punch", "shield_bash":
 			for d: Vector2i in Grid.DIRS:
 				var c: Vector2i = unit.pos + d
@@ -86,9 +105,9 @@ static func valid_targets(state: BattleState, unit: Unit, action_id: String) -> 
 				var c: Vector2i = unit.pos + d
 				if state.unit_at(c) != null and not MechActions.throw_dests(state, unit, c).is_empty():
 					out.append(c)
-		"throw_spear":
+		"throw_spear", "impact_spear", "thermal_lance":
 			for d: Vector2i in Grid.DIRS:
-				for c: Vector2i in state.line_attack(unit.pos, d, MechActions.THROW_RANGE)["cells"]:
+				for c: Vector2i in state.line_attack(unit.pos, d, MechActions.action_range(action_id))["cells"]:
 					out.append(c)
 		"grapple":
 			# stage-1 "grab" targets: first unit / wall / reactor down each
@@ -96,7 +115,7 @@ static func valid_targets(state: BattleState, unit: Unit, action_id: String) -> 
 			for d: Vector2i in Grid.DIRS:
 				var la: Dictionary = state.line_attack(unit.pos, d, MechActions.GRAPPLE_RANGE)
 				var focus: Vector2i = NONE
-				if la["hit_unit"] != null or la["hit_reactor"]:
+				if la["hit_unit"] != null or la["hit_reactor"] or (la.get("hit_object") != null and la["hit_object"].kind == GridObject.Kind.ANCHOR):
 					focus = la["hit_pos"]
 				elif la["blocked_by_wall"]:
 					focus = unit.pos + d * (la["cells"].size() + 1)
@@ -121,105 +140,42 @@ static func valid_targets(state: BattleState, unit: Unit, action_id: String) -> 
 ## `opts["dest"]` is the player's stage-2 destination for Grapple / Throw.
 static func build(state: BattleState, unit: Unit, action_id: String, target_cell: Vector2i, opts: Dictionary = {}) -> Preview:
 	var p := Preview.new()
-	if not target_cell in valid_targets(state, unit, action_id):
+	if target_cell not in valid_targets(state, unit, action_id):
 		return p
-	p.valid = true
 	var dest: Vector2i = opts.get("dest", MechActions.NO_DEST)
-
-	match action_id:
-		"thrust", "shield_bash", "punch":
-			p.target_cells = [target_cell]
-			var victim: Unit = state.unit_at(target_cell)
-			if victim == null:
-				return p
-			p._add_hit(state, victim.id, MechActions.action_damage(action_id))
-			var push_dist: int = MechActions.melee_push(action_id)
-			if push_dist > 0:
-				_apply_push(state, p, victim, target_cell - unit.pos, push_dist,
-					MechActions.action_collision(action_id))
-		"throw":
-			p.target_cells = [target_cell]
-			var plan: Dictionary = MechActions.throw_plan(state, unit, target_cell, dest)
-			if plan.is_empty():
-				p.valid = false
-				return p
-			_apply_command(state, p, plan)
-		"grapple":
-			p.target_cells = [target_cell]
-			var gdir: Vector2i = Grid.cardinal_dir(unit.pos, target_cell)
-			p.line_cells = state.line_attack(unit.pos, gdir, MechActions.GRAPPLE_RANGE)["cells"]
-			var gplan: Dictionary = MechActions.grapple_plan(state, unit, target_cell, dest)
-			if gplan.is_empty():
-				p.valid = false
-				return p
-			if gplan["is_self"]:
-				p.mover_id = unit.id
-			_apply_command(state, p, gplan)
-		"throw_spear":
-			var dir3: Vector2i = Grid.cardinal_dir(unit.pos, target_cell)
-			var la2: Dictionary = state.line_attack(unit.pos, dir3, MechActions.THROW_RANGE)
-			p.line_cells = la2["cells"]
-			p.target_cells = [target_cell]
-			if la2["hit_unit"] != null:
-				p._add_hit(state, la2["hit_unit"].id, MechActions.THROW_DMG)
-			elif la2["hit_reactor"]:
+	if action_id == "grapple" and MechActions.grapple_plan(state, unit, target_cell, dest).is_empty():
+		return p
+	if action_id == "throw" and MechActions.throw_plan(state, unit, target_cell, dest).is_empty():
+		return p
+	if action_id in ["tow_cable", "emergency_winch"] and MechActions.rescue_plan(state, unit, target_cell, dest, action_id).is_empty():
+		return p
+	if action_id == "throw_spear":
+		p.spear_landing = MechActions.spear_landing_cell(state, unit, Grid.cardinal_dir(unit.pos, target_cell))
+		if p.spear_landing == Vector2i(-1, -1):
+			return p
+	p.valid = true
+	p.target_cells = [target_cell]
+	if action_id in ["throw_spear", "impact_spear", "thermal_lance", "grapple", "tow_cable", "anchor_shot"]:
+		p.line_cells = state.line_attack(unit.pos, Grid.cardinal_dir(unit.pos, target_cell), MechActions.action_range(action_id))["cells"]
+	# Run the actual resolver on isolated runtime data. This also models impairment
+	# between sequential hits, proc consumption, death before push, and chain blasts.
+	var sim := state.simulation_copy()
+	var actor: Unit = sim.units[unit.id]
+	MechActions.execute(sim, actor, action_id, target_cell, opts)
+	p.outcome_state = sim
+	for event: Dictionary in sim.events:
+		match event.t:
+			"damage":
+				p._add_hit(state, event.id, event.amount if event.cause == "explosion" else event.get("potential", event.amount), event.pos, true)
+			"reactor_damage":
 				p.hits_reactor = true
-				p.reactor_damage = MechActions.THROW_DMG
-			elif la2.get("hit_object") != null and la2["hit_object"].is_destructible():
-				var bo: GridObject = la2["hit_object"]
-				if bo.hp - MechActions.THROW_DMG <= 0:
-					_add_explosion(state, p, [bo.pos], {})
-			p.spear_landing = MechActions.spear_landing_cell(state, unit, dir3)
-			if p.spear_landing == Vector2i(-1, -1):
-				p.valid = false
-		"deploy_shield":
-			p.target_cells = [target_cell]
-		"retrieve_spear", "retrieve_shield":
-			p.target_cells = [target_cell]
+				p.reactor_damage += event.amount
+			"displacement":
+				p._add_displacement(event.id, event.from, event.to, event.dir, event.collided, event.blocker, event.collision)
+				if event.id == unit.id:
+					p.mover_id = unit.id
+			"explosion":
+				for c: Vector2i in event.cells:
+					if c not in p.explosion_cells:
+						p.explosion_cells.append(c)
 	return p
-
-## Trace a forced move and record the displacement + consequences, mirroring
-## Push.resolve exactly. `collision_dmg` is the hard-stop damage this action
-## deals (0 for a damage-free shove). Also predicts pit destruction and barrel
-## chain explosions.
-static func _apply_push(state: BattleState, p: Preview,
-		victim: Unit, dir: Vector2i, dist: int, collision_dmg: int) -> void:
-	var t: Dictionary = Push.trace(state, victim.pos, dir, dist)
-	if t["hazard"] == "pit":
-		p._add_displacement(victim.id, victim.pos, t["final"], dir, "hazard", t["blocker"], 0)
-		p._add_hit(state, victim.id, Mission.PIT_DAMAGE, t["final"])   # lethal
-		return
-	var col: int = collision_dmg if t["collided"] != "none" else 0
-	p._add_displacement(victim.id, victim.pos, t["final"], dir, t["collided"], t["blocker"], col)
-	if col > 0:
-		p._add_hit(state, victim.id, col)
-		if t["collided"] == "unit":
-			var slammed: Unit = state.unit_at(t["blocker"])
-			if slammed != null:
-				p._add_hit(state, slammed.id, col)
-		elif t["collided"] == "object":
-			var obj: GridObject = state.object_at(t["blocker"])
-			if obj != null and obj.is_destructible() and obj.hp - col <= 0:
-				_add_explosion(state, p, [obj.pos], {victim.id: t["final"]}, p._damage_so_far())
-
-## Merge a predicted (chain) explosion into the preview.
-static func _add_explosion(state: BattleState, p: Preview, barrels: Array,
-		unit_pos_override: Dictionary, damage_so_far: Dictionary = {}) -> void:
-	var ep: Dictionary = TerrainFx.explosion_plan(state, barrels, unit_pos_override, damage_so_far)
-	for bc: Vector2i in ep["blast"]:
-		if not bc in p.explosion_cells:
-			p.explosion_cells.append(bc)
-	for h: Dictionary in ep["hits"]:
-		var at: Vector2i = unit_pos_override.get(h["id"], MechActions.NO_DEST)
-		p._add_hit(state, h["id"], h["amount"], at, true)   # explosion_plan already mitigated
-	if ep["reactor_dmg"] > 0:
-		p.hits_reactor = true
-		p.reactor_damage += ep["reactor_dmg"]
-
-## Same, driven by a displacement command {entity, dir, dist, collision}.
-static func _apply_command(state: BattleState, p: Preview, plan: Dictionary) -> void:
-	var e: Unit = state.units.get(plan["entity"])
-	if e == null:
-		p.valid = false
-		return
-	_apply_push(state, p, e, plan["dir"], plan["dist"], int(plan["collision"]))

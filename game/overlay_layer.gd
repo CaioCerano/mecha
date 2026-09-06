@@ -6,7 +6,7 @@ extends Node2D
 ## and the persistent enemy telegraphs. battle.gd rebuilds the layer set each
 ## refresh; draw order is insertion order.
 
-const CELL: int = GridView.CELL
+
 
 ## name -> { cells:Array[Vector2i], color:Color, filled:bool, ring:bool }
 var _layers: Dictionary = {}
@@ -32,10 +32,10 @@ func _draw() -> void:
 		var spec: Dictionary = _layers[layer_name]
 		var color: Color = spec["color"]
 		for c: Vector2i in spec["cells"]:
-			var top_left: Vector2 = GridView.ORIGIN + Vector2(c.x * CELL, c.y * CELL)
+			var polygon := GridView.cell_polygon(c)
 			if spec["ring"]:
-				draw_arc(top_left + Vector2(CELL, CELL) * 0.5, CELL * 0.36, 0.0, TAU, 28, color, 3.0, true)
+				draw_arc(GridView.cell_to_world(c), GridView.HALF_HEIGHT * 0.72, 0.0, TAU, 28, color, 2.0, true)
 			elif spec["filled"]:
-				draw_rect(Rect2(top_left, Vector2(CELL, CELL)), color)
+				draw_colored_polygon(polygon, color)
 			else:
-				draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 4, CELL - 4)), color, false, 3.0)
+				draw_polyline(polygon + PackedVector2Array([polygon[0]]), color, 2.0, true)

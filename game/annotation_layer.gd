@@ -6,7 +6,7 @@ extends Node2D
 ## (collision / lethal / interrupt / safe). Pure presentation — battle.gd
 ## feeds it geometry it got from ActionPreview / Intent; it computes nothing.
 
-const CELL: int = GridView.CELL
+
 
 ## name -> { points:PackedVector2Array (world), color:Color, faded:bool, thin:bool }
 var _arrows: Dictionary = {}
@@ -62,7 +62,7 @@ func _draw() -> void:
 	var font := ThemeDB.fallback_font
 	for name: String in _labels:
 		for e: Dictionary in _labels[name]:
-			_draw_label(font, GridView.cell_to_world(e["cell"]), e["text"], e["color"], e.get("big", false))
+			_draw_label(font, GridView.cell_to_world(e["cell"]) + e.get("offset", Vector2.ZERO), e["text"], e["color"], e.get("big", false))
 
 func _draw_arrow(pts: PackedVector2Array, color: Color, faded: bool, thin: bool = false) -> void:
 	var col := color
@@ -96,7 +96,7 @@ func _draw_label(font: Font, center: Vector2, text: String, color: Color, big: b
 	draw_string(font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
 
 func _draw_badge(center: Vector2, kind: String) -> void:
-	var at: Vector2 = center + Vector2(CELL * 0.30, -CELL * 0.30)
+	var at: Vector2 = center + Vector2(GridView.HALF_WIDTH * 0.62, -GridView.HALF_HEIGHT * 0.6)
 	var r: float = 11.0
 	match kind:
 		"collision":
@@ -118,7 +118,8 @@ func _draw_badge(center: Vector2, kind: String) -> void:
 
 ## Faded "what's coming" shape, matching UnitView's enemy shapes.
 func _draw_silhouette(center: Vector2, unit_kind: int) -> void:
-	var rr: float = CELL * 0.30
+	center.y -= UnitView.R
+	var rr: float = UnitView.R
 	var col := Color(0.90, 0.30, 0.30, 0.35)
 	var pts: PackedVector2Array
 	if unit_kind == Unit.Kind.CHARGER:

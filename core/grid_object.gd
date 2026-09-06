@@ -7,7 +7,7 @@ extends RefCounted
 ## here, queried through capability predicates so combat code never has to ask
 ## "is this cell a barrel".
 
-enum Kind { THROWN_SPEAR, DEPLOYED_SHIELD, REACTOR, PIT, EXPLOSIVE }
+enum Kind { THROWN_SPEAR, DEPLOYED_SHIELD, REACTOR, PIT, EXPLOSIVE, ANCHOR }
 
 var kind: Kind
 var pos: Vector2i
@@ -49,11 +49,11 @@ func blocks_move() -> bool:
 ## A forced-movement slide (Push / charge) stops in the cell BEFORE this one.
 ## Pits are the exception: forced movement can send a unit into a pit.
 func blocks_forced_move() -> bool:
-	return kind == Kind.DEPLOYED_SHIELD or kind == Kind.REACTOR or kind == Kind.EXPLOSIVE
+	return kind == Kind.DEPLOYED_SHIELD or kind == Kind.REACTOR or kind == Kind.EXPLOSIVE or kind == Kind.ANCHOR
 
 ## Stops ranged line attacks (thrown spear, grapple line).
 func blocks_line() -> bool:
-	return kind == Kind.REACTOR or kind == Kind.EXPLOSIVE
+	return kind == Kind.REACTOR or kind == Kind.EXPLOSIVE or kind == Kind.ANCHOR
 
 ## Entering this cell (only possible via forced movement) triggers a hazard.
 func is_hazard() -> bool:
@@ -64,7 +64,7 @@ func hazard_damage() -> int:
 
 ## Slamming a unit into this deals the shared collision damage to that unit.
 func is_collision_surface() -> bool:
-	return kind == Kind.DEPLOYED_SHIELD or kind == Kind.REACTOR or kind == Kind.EXPLOSIVE
+	return kind == Kind.DEPLOYED_SHIELD or kind == Kind.REACTOR or kind == Kind.EXPLOSIVE or kind == Kind.ANCHOR
 
 ## Has HP and can be broken by damage / collisions.
 func is_destructible() -> bool:

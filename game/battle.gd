@@ -29,11 +29,21 @@ const SLAM_COL: Color = Color(1.00, 0.45, 0.30, 0.95)      # a placement tile th
 
 const NO_CELL: Vector2i = Vector2i(-9999, -9999)
 
+const ZOOM_MIN: float = 0.6
+const ZOOM_MAX: float = 3.0
+const ZOOM_STEP: float = 1.12
+const PAN_KEY_SPEED: float = 28.0
+
+signal return_to_loadout
+var squad_loadout: SquadLoadout = SquadLoadout.new()
+
 var state: BattleState
 var grid_view: GridView
 var overlay: OverlayLayer
 var annot: AnnotationLayer
 var hud: Hud
+var _cam: Camera2D
+var _panning: bool = false
 var _units_root: Node2D
 var _objects_root: Node2D
 var unit_views: Dictionary[int, UnitView] = {}
@@ -50,7 +60,7 @@ var hover_cell: Vector2i = Vector2i(-1, -1)
 var _busy: bool = false
 
 func _two_stage() -> bool:
-	return pending_action == "grapple" or pending_action == "throw"
+	return pending_action in ["grapple", "throw", "tow_cable", "emergency_winch"]
 
 func _ready() -> void:
 	_start_mission()
@@ -58,7 +68,7 @@ func _ready() -> void:
 # ---------------------------------------------------------------- setup
 
 func _start_mission() -> void:
-	for node: Node in [grid_view, overlay, annot, _units_root, _objects_root, hud]:
+	for node: Node in [grid_view, overlay, annot, _units_root, _objects_root, hud, _cam]:
 		if is_instance_valid(node):
 			node.queue_free()
 	unit_views.clear()
@@ -67,15 +77,22 @@ func _start_mission() -> void:
 	selected_id = -1
 	pending_action = ""
 	focus_cell = NO_CELL
+	_panning = false
 	_busy = false
 
-	state = BattleState.new(Mission.by_id(mission_id))
+	state = BattleState.new(Mission.by_id(mission_id), squad_loadout)
 
 	grid_view = GridView.new()
 	add_child(grid_view)
 	grid_view.setup(state)
 
+	_cam = Camera2D.new()
+	add_child(_cam)
+	_cam.make_current()
+	_reset_camera()
+
 	overlay = OverlayLayer.new()
+	overlay.z_index = 1500
 	add_child(overlay)
 
 	_objects_root = Node2D.new()
@@ -84,6 +101,7 @@ func _start_mission() -> void:
 	add_child(_units_root)
 
 	annot = AnnotationLayer.new()
+	annot.z_index = 1600
 	add_child(annot)
 
 	for pos: Vector2i in state.objects:
@@ -97,7 +115,12 @@ func _start_mission() -> void:
 	hud.action_chosen.connect(_on_action_chosen)
 	hud.mech_chosen.connect(_on_mech_chosen)
 	hud.end_turn_pressed.connect(_on_end_turn)
-	hud.restart_pressed.connect(_start_mission)
+	hud.restart_pressed.connect(func() -> void:
+		if not _busy:
+			_start_mission())
+	hud.loadout_pressed.connect(func() -> void:
+		if not _busy:
+			return_to_loadout.emit())
 	hud.mission_selected.connect(_on_mission_selected)
 
 	refresh()
@@ -116,13 +139,77 @@ func _add_object_view(o: GridObject) -> void:
 	if o.kind == GridObject.Kind.REACTOR:
 		reactor_view = ov
 
+# ---------------------------------------------------------------- camera
+
+## Default framing: fit the board into the clear area between the top status
+## strip, the bottom action bar and the right squad rail.
+func _reset_camera() -> void:
+	if not is_instance_valid(_cam):
+		return
+	var board := GridView.board_visual_bounds()
+	var view := get_viewport_rect().size
+	# screen-space rectangle the board should sit inside: below the top strip,
+	# left of the squad rail, clear of the bottom hint line. The selected-unit
+	# panel floats over the lower-left corner (as in XCOM / Into the Breach).
+	var pad := Rect2(40, 72, maxf(Hud.PANEL_POS.x - 60.0, 320.0), maxf(view.y - 72.0 - 84.0, 240.0))
+	var z: float = clampf(minf(pad.size.x / board.size.x, pad.size.y / board.size.y) * 0.92, ZOOM_MIN, ZOOM_MAX)
+	_cam.zoom = Vector2(z, z)
+	# world point that should land at the centre of `pad`
+	var pad_centre := pad.position + pad.size * 0.5
+	_cam.position = board.get_center() - (pad_centre - view * 0.5) / z
+
+## Exact inverse pair matching Camera2D's default (drag-centre, no offset /
+## rotation), so mouse picking and the headless input tests agree regardless of
+## when the viewport's canvas transform updates.
+func _screen_to_world(p: Vector2) -> Vector2:
+	if not is_instance_valid(_cam):
+		return p
+	return (p - get_viewport_rect().size * 0.5) / _cam.zoom.x + _cam.position
+
+func _world_to_screen(p: Vector2) -> Vector2:
+	if not is_instance_valid(_cam):
+		return p
+	return (p - _cam.position) * _cam.zoom.x + get_viewport_rect().size * 0.5
+
+func _zoom_at(factor: float, screen_pivot: Vector2) -> void:
+	var before := _screen_to_world(screen_pivot)
+	var z: float = clampf(_cam.zoom.x * factor, ZOOM_MIN, ZOOM_MAX)
+	_cam.zoom = Vector2(z, z)
+	_cam.position += before - _screen_to_world(screen_pivot)
+
+## Wheel = zoom toward the cursor, middle-drag = pan, Home = reset. Handled
+## before the playback-busy gate so the board stays navigable during enemy turns.
+func _handle_camera(event: InputEvent) -> bool:
+	if not is_instance_valid(_cam):
+		return false
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_WHEEL_UP:
+		_zoom_at(ZOOM_STEP, event.position)
+		return true
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+		_zoom_at(1.0 / ZOOM_STEP, event.position)
+		return true
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_MIDDLE:
+		_panning = event.pressed
+		return true
+	if event is InputEventMouseMotion and _panning:
+		_cam.position -= event.relative / _cam.zoom.x
+		return true
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_HOME:
+		_reset_camera()
+		return true
+	return false
+
 # ---------------------------------------------------------------- input
 
 func _unhandled_input(event: InputEvent) -> void:
-	if _busy or state == null:
+	if state == null:
+		return
+	if _handle_camera(event):
+		return
+	if _busy:
 		return
 	if event is InputEventMouseMotion:
-		var c: Vector2i = GridView.world_to_cell(event.position)
+		var c: Vector2i = GridView.world_to_cell(_screen_to_world(event.position), Vector2i(state.grid.width, state.grid.height))
 		if c != hover_cell:
 			hover_cell = c
 			_update_overlays()
@@ -145,7 +232,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		if state.phase == BattleState.Phase.PLAYER:
-			_on_click(GridView.world_to_cell(event.position))
+			_on_click(GridView.world_to_cell(_screen_to_world(event.position), Vector2i(state.grid.width, state.grid.height)))
 
 ## 1-4 pick the Nth ability of the selected mech, M picks Move, Enter ends the
 ## turn. Returns true if the key was consumed.
@@ -159,7 +246,7 @@ func _handle_hotkey(keycode: int) -> bool:
 	if keycode == KEY_M:
 		_on_action_chosen("move")
 		return true
-	if keycode >= KEY_1 and keycode <= KEY_4:
+	if keycode >= KEY_1 and keycode <= KEY_9:
 		var acts: Array[String] = MechActions.available_actions(state, sel)
 		var n: int = keycode - KEY_1
 		if n < acts.size():
@@ -196,6 +283,7 @@ func _on_click(cell: Vector2i) -> void:
 	var clicked: Unit = state.unit_at(cell)
 	if clicked != null and clicked.is_player() and clicked.is_alive():
 		selected_id = clicked.id
+		_note_suite(clicked)
 		refresh()
 		return
 	if sel != null and sel.is_alive() and cell in state.reachable_for(sel):
@@ -232,6 +320,8 @@ func _on_click_two_stage(sel: Unit, cell: Vector2i) -> void:
 	refresh()
 
 func _stage2_cells(sel: Unit) -> Array[Vector2i]:
+	if pending_action in ["tow_cable", "emergency_winch"]:
+		return MechActions.rescue_dests(state, sel, focus_cell, pending_action)
 	if pending_action == "grapple":
 		return MechActions.grapple_dests(state, sel, focus_cell)
 	if pending_action == "throw":
@@ -253,12 +343,18 @@ func _on_mech_chosen(id: int) -> void:
 	if _busy:
 		return
 	selected_id = id
+	_note_suite(state.units[id])
 	pending_action = ""
 	focus_cell = NO_CELL
 	refresh()
 
 func _on_action_chosen(action_id: String) -> void:
 	if _busy:
+		return
+	if action_id in ["brace", "engineer_repair"]:
+		var actor: Unit = state.units.get(selected_id)
+		if actor != null:
+			_do_action(actor, action_id, actor.pos)
 		return
 	pending_action = "" if pending_action == action_id else action_id
 	focus_cell = NO_CELL
@@ -315,7 +411,7 @@ func _record_manipulation(sel: Unit, action_id: String, cell: Vector2i, opts: Di
 	var blockers: Array[Vector2i] = []
 	if action_id == "deploy_shield":
 		blockers.append(cell)
-	for ch: Intent.Change in Intent.project(state, moves, blockers, removed):
+	for ch: Intent.Change in Intent.project(state, moves, blockers, removed, p.outcome_state):
 		if ch.interrupted:
 			state.tel.bump("intents_interrupted")
 		if ch.redirected:
@@ -364,6 +460,8 @@ func _update_overlays() -> void:
 	overlay.clear_all()
 	annot.clear_all()
 	_update_hover_marks()
+	if state.grid.in_bounds(hover_cell):
+		overlay.set_outline("hover", [hover_cell], Color(1, 1, 1, 0.65))
 
 	# Enemy intent — planned attacks, reinforcements, and where the deterministic
 	# movers (grunts / interceptors) will go — stays on the board through
@@ -427,7 +525,7 @@ func _draw_preview_intent(p: ActionPreview.Preview) -> void:
 	var blockers: Array[Vector2i] = []
 	if pending_action == "deploy_shield" and hover_cell != Vector2i(-1, -1):
 		blockers.append(hover_cell)
-	var changes: Array = Intent.project(state, moves, blockers, removed)
+	var changes: Array = Intent.project(state, moves, blockers, removed, p.outcome_state)
 	if changes.is_empty():
 		return
 	var faded: Dictionary = {}
@@ -468,6 +566,8 @@ func _draw_two_stage(sel: Unit) -> void:
 			annot.set_badges("bad", [{"cell": hover_cell, "kind": "interrupt"}])
 
 func _draw_stage2_dots(sel: Unit, focus: Vector2i) -> void:
+	if pending_action in ["tow_cable", "emergency_winch"]:
+		overlay.set_rings("rescue", MechActions.rescue_dests(state, sel, focus, pending_action), DEST_COL)
 	if pending_action == "grapple":
 		overlay.set_rings("g_dests", MechActions.grapple_dests(state, sel, focus), DEST_COL)
 	elif pending_action == "throw":
@@ -493,6 +593,8 @@ func _draw_telegraphs(faded: Dictionary = {}) -> void:
 	for tg: Telegraph in state.telegraphs:
 		var fade: bool = faded.get(tg.owner_id, false)
 		var edge: Color = TELE_FADE if fade else TELE_EDGE
+		if not fade and _suite_intersects(tg.cells):
+			edge = Color(1, 0.8, 0.35)
 		overlay.set_fill("tele_%d" % i, tg.cells, TELE_FADE if fade else TELE_FILL)
 		overlay.set_outline("teleedge_%d" % i, tg.cells, edge)
 		if tg.kind == Telegraph.Kind.CHARGE_LINE and not tg.cells.is_empty():
@@ -507,7 +609,7 @@ func _draw_telegraphs(faded: Dictionary = {}) -> void:
 					annot.set_badges("tele_pit_b_%d" % i, [
 						{"cell": owner.pos, "kind": "lethal"}, {"cell": oc["stop"], "kind": "lethal"}])
 					annot.set_labels("tele_pit_l_%d" % i, [
-						{"cell": oc["stop"] - Vector2i(0, 1), "text": "→ PIT", "color": TELE_EDGE, "big": false}])
+						{"cell": oc["stop"], "offset": Vector2(0, -30), "text": "→ PIT", "color": TELE_EDGE, "big": false}])
 		elif tg.kind == Telegraph.Kind.AOE and not tg.cells.is_empty():
 			overlay.set_rings("tele_ring_%d" % i, [tg.cells[0]], edge)
 		i += 1
@@ -524,7 +626,7 @@ func _draw_spawn_telegraphs() -> void:
 		if edge != Vector2i.ZERO:
 			annot.set_arrow("spawn_arrow_%d" % i, [cell - edge, cell, cell + edge], SPAWN_EDGE)
 		sils.append({"cell": cell, "unit_kind": sp["kind"]})
-		labels.append({"cell": cell - Vector2i(0, 1), "text": "INCOMING", "color": SPAWN_EDGE, "big": false})
+		labels.append({"cell": cell, "offset": Vector2(0, -38), "text": "INCOMING", "color": SPAWN_EDGE, "big": false})
 		i += 1
 	if not sils.is_empty():
 		annot.set_silhouettes("spawn_sils", sils)
@@ -544,7 +646,7 @@ func _draw_enemy_move_intents(faded: Dictionary = {}) -> void:
 		if _has_telegraph_owner(u.id):
 			continue
 		var p: EnemyAi.EnemyPlan = EnemyAi.plan_for(state, u)
-		var hovered: bool = u.id == hov
+		var hovered: bool = u.id == hov or _suite_intersects([p.target_cell, p.dest])
 		var dim: bool = faded.get(u.id, false)
 		var shaft_a: float = 0.10 if dim else (0.90 if hovered else 0.26)
 		var dest_a: float = 0.14 if dim else (1.0 if hovered else 0.55)
@@ -583,7 +685,7 @@ func _draw_intent_changes(changes: Array) -> void:
 			if ch.kind == "charge" and ch.projected_dest.x >= 0:
 				badges.append({"cell": ch.projected_dest, "kind": "lethal"})
 				annot.set_labels("proj_pit_%d" % ci, [
-					{"cell": ch.projected_dest - Vector2i(0, 1), "text": "→ PIT", "color": Color(1.0, 0.85, 0.25), "big": false}])
+					{"cell": ch.projected_dest, "offset": Vector2(0, -30), "text": "→ PIT", "color": Color(1.0, 0.85, 0.25), "big": false}])
 		elif ch.interrupted and owner != null:
 			badges.append({"cell": owner.pos, "kind": "interrupt"})
 		if ch.interrupted and ch.safe_cell.x >= 0:
@@ -659,6 +761,20 @@ func _hint() -> String:
 		return "%s selected. Click a blue tile to move, or choose an action." % sel.display_name()
 	if _two_stage():
 		if focus_cell == NO_CELL:
+			if ActionPreview.valid_targets(state, sel, pending_action).is_empty():
+				match pending_action:
+					"emergency_winch":
+						return "No allied mech in an adjacent tile — move one next to %s first. Right-click to cancel." % sel.display_name()
+					"tow_cable":
+						return "No allied mech within cardinal range 3. Right-click to cancel."
+					"throw":
+						return "No unit next to the Grappler to grab. Right-click to cancel."
+					_:
+						return "No valid target for %s. Right-click to cancel." % MechActions.action_label(pending_action)
+			if pending_action == "emergency_winch":
+				return "Click an adjacent allied mech, then a blue tile one step away."
+			if pending_action == "tow_cable":
+				return "Click an allied mech in cardinal range, then a blue pull tile."
 			if pending_action == "grapple":
 				return "Grapple — click a gold target (enemy, ally, wall or reactor) to grab it."
 			return "Throw — click a unit next to the Grappler to grab it."
@@ -732,6 +848,10 @@ func _play_one(ev: Dictionary) -> void:
 		"spear_retrieve":
 			_despawn_object_at(ev["from"])
 			await _wait(0.05)
+		"anchor_place":
+			_spawn_object_at(ev["pos"])
+		"build_proc":
+			_floater(ev["pos"], ev["text"])
 		"shield_deploy":
 			_spawn_object_at(ev["pos"])
 			await _wait(0.08)
@@ -795,6 +915,7 @@ func _floater(cell: Vector2i, text: String) -> void:
 	l.add_theme_color_override("font_outline_color", Color.BLACK)
 	l.add_theme_constant_override("outline_size", 4)
 	l.position = GridView.cell_to_world(cell) + Vector2(-8, -12)
+	l.z_index = 1700
 	add_child(l)
 	var tw := create_tween()
 	tw.set_parallel(true)
@@ -807,6 +928,7 @@ func _tether(from: Vector2i, to: Vector2i) -> void:
 	t.points = PackedVector2Array([GridView.cell_to_world(from), GridView.cell_to_world(to)])
 	t.width = 3.0
 	t.default_color = Color(1.0, 0.85, 0.55, 0.9)
+	t.z_index = 1700
 	add_child(t)
 	await _wait(0.12)
 	var tw := create_tween()
@@ -820,6 +942,7 @@ func _spear_fly(from: Vector2i, to: Vector2i) -> void:
 	s.width = 4.0
 	s.default_color = Color(0.8, 0.9, 1.0)
 	s.position = GridView.cell_to_world(from)
+	s.z_index = 1700
 	add_child(s)
 	var tw := create_tween()
 	tw.tween_property(s, "position", GridView.cell_to_world(to), 0.22)
@@ -837,3 +960,22 @@ func _despawn_object_at(cell: Vector2i) -> void:
 		if ov.obj != null and ov.obj.kind != GridObject.Kind.REACTOR and ov.obj.pos == cell:
 			object_views.erase(ov)
 			ov.queue_free()
+
+func _suite_intersects(cells: Array) -> bool:
+	var selected: Unit = state.units.get(selected_id)
+	if selected == null or not selected.has_system("targeting_suite"):
+		return false
+	var influence: Dictionary = state.reachable_for(selected)
+	influence[selected.pos] = 0
+	for action: String in MechActions.available_actions(state, selected):
+		for c: Vector2i in ActionPreview.valid_targets(state, selected, action):
+			influence[c] = 0
+	for c: Vector2i in cells:
+		if influence.has(c):
+			return true
+	return false
+
+func _note_suite(unit: Unit) -> void:
+	if unit.has_system("targeting_suite") and not unit.suite_used:
+		unit.suite_used = true
+		state.tel.bump("system:targeting_suite")
