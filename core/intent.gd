@@ -37,7 +37,8 @@ class Change:
 ## `moves`    : unit_id -> hypothetical position after the previewed action.
 ## `blockers` : cells that become move-solid (e.g. a deploy-shield tile).
 ## `removed`  : unit_id -> true for enemies the previewed action destroys.
-static func project(state: BattleState, moves: Dictionary = {}, blockers: Array = [], removed: Dictionary = {}) -> Array:
+static func project(state: BattleState, moves: Dictionary = {}, blockers: Array = [], removed: Dictionary = {}, projected_state: BattleState = null) -> Array:
+	var projected: BattleState = projected_state if projected_state != null else state
 	var hypo: Dictionary = {"moves": moves, "blockers": blockers, "removed": removed}
 	var out: Array = []
 
@@ -61,8 +62,8 @@ static func project(state: BattleState, moves: Dictionary = {}, blockers: Array 
 				chd.safe_cell = _cell_of(state, orig["target"])
 			out.append(chd)
 			continue
-		var opos: Vector2i = moves.get(owner.id, owner.pos)
-		var proj: Dictionary = charge_outcome(state, opos, tg.charge_dir, moves, blockers)
+		var opos: Vector2i = projected.units[owner.id].pos if projected_state != null else moves.get(owner.id, owner.pos)
+		var proj: Dictionary = charge_outcome(projected, opos, tg.charge_dir, {} if projected_state != null else moves, [] if projected_state != null else blockers)
 		if orig["cells"] == proj["cells"] and orig["target"] == proj["target"] and orig["pit"] == proj["pit"]:
 			continue
 		var ch := Change.new()
@@ -95,7 +96,7 @@ static func project(state: BattleState, moves: Dictionary = {}, blockers: Array 
 		if _has_telegraph(state, u.id):
 			continue
 		var op: EnemyAi.EnemyPlan = EnemyAi.plan_for(state, u, {})
-		var pp: EnemyAi.EnemyPlan = EnemyAi.plan_for(state, u, hypo)
+		var pp: EnemyAi.EnemyPlan = EnemyAi.plan_for(projected, projected.units[u.id], {"removed": removed} if projected_state != null else hypo)
 		if _plans_equal(op, pp):
 			continue
 		var ch := Change.new()

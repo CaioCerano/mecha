@@ -20,7 +20,14 @@ class Result:
 
 ## Pure: where does a unit at `from` end up if shoved `dist` cells along `dir`,
 ## and what stops it? A pit is a terminal cell -- the unit slides in and stops.
-static func trace(state, from: Vector2i, dir: Vector2i, dist: int) -> Dictionary:
+static func trace(state, from: Vector2i, dir: Vector2i, dist: int, source_id: int = -1, willing: bool = false) -> Dictionary:
+	var victim: Unit = state.unit_at(from)
+	var source: Unit = state.units.get(source_id)
+	if victim != null and not willing:
+		if victim.braced and source != null and source.team != victim.team:
+			dist = 0
+		else:
+			dist = maxi(0, dist - int(victim.kind == Unit.Kind.BULWARK) - int(victim.has_system("stabilizers")))
 	var pos: Vector2i = from
 	for i: int in range(dist):
 		var nxt: Vector2i = pos + dir
@@ -45,10 +52,24 @@ static func trace(state, from: Vector2i, dir: Vector2i, dist: int) -> Dictionary
 ##    a slammed unit); a slammed destructible object also takes `collision_dmg`
 ##    (which can detonate a barrel, resolved by BattleState.damage_object).
 ## `source_id` is whoever initiated the shove (for telemetry attribution).
-static func resolve(state, unit: Unit, dir: Vector2i, dist: int, collision_dmg: int, source_id: int = -1) -> Result:
+static func resolve(state, unit: Unit, dir: Vector2i, dist: int, collision_dmg: int, source_id: int = -1, willing: bool = false) -> Result:
 	var res := Result.new()
 	res.start = unit.pos
-	var t: Dictionary = trace(state, unit.pos, dir, dist)
+	var t: Dictionary = trace(state, unit.pos, dir, dist, source_id, willing)
+	var source: Unit = state.units.get(source_id)
+	if not willing and dist > 0:
+		if unit.has_system("stabilizers"):
+			BuildEffects.proc(state, unit, "system", "stabilizers")
+		if unit.kind == Unit.Kind.BULWARK:
+			BuildEffects.proc(state, unit, "category", "heavy")
+		if unit.braced and source != null and source.team != unit.team:
+			BuildEffects.proc(state, unit, "secondary", "brace_block")
+	if t["collided"] not in ["none", "hazard"] and collision_dmg > 0 and source != null and source.pilot_id == "brawler" and not source.brawler_used:
+		collision_dmg += 1
+		source.brawler_used = true
+		BuildEffects.proc(state, source, "pilot", "brawler")
+	state.events.append({"t": "displacement", "id": unit.id, "from": unit.pos, "to": t["final"], "dir": dir,
+		"collided": t["collided"], "blocker": t["blocker"], "collision": collision_dmg if t["collided"] not in ["none", "hazard"] else 0})
 	res.final_pos = t["final"]
 	res.collided_with = t["collided"]
 	res.blocker_pos = t["blocker"]

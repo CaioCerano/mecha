@@ -22,6 +22,7 @@ var telegraphs: Array[Telegraph] = []
 var pending_spawns: Array = []
 
 var reactor: GridObject
+var loadout: SquadLoadout
 var data: MissionData
 var tel: Telemetry
 var turn_number: int = 1
@@ -34,7 +35,11 @@ var _spawn_index: int = 0
 
 # ----------------------------------------------------------------- construction
 
-func _init(mission_data: MissionData = null) -> void:
+func _init(mission_data: MissionData = null, squad_loadout: SquadLoadout = null) -> void:
+	loadout = squad_loadout.copy() if squad_loadout != null else SquadLoadout.new()
+	if not loadout.validation_errors().is_empty():
+		push_error("Invalid squad loadout: " + str(loadout.validation_errors()))
+		return
 	data = mission_data if mission_data != null else Mission.reactor_breach()
 	tel = Telemetry.new()
 	grid = Grid.new(data.grid_w, data.grid_h, data.walls)
@@ -66,6 +71,11 @@ func _spawn_unit(kind: Unit.Kind, team: Unit.Team, pos: Vector2i) -> Unit:
 	u.hp = stats["hp"]
 	u.max_hp = stats["hp"]
 	u.move_range = stats["move"]
+	if team == Unit.Team.PLAYER and loadout.mechs.has(kind):
+		var build: Dictionary = loadout.mechs[kind]
+		u.secondary_id = build["secondary_id"]
+		u.systems.assign(build["systems"])
+		u.pilot_id = build["pilot_id"]
 	units[u.id] = u
 	occupancy[pos] = u.id
 	return u
@@ -116,7 +126,7 @@ func blocked_for_move() -> Dictionary[Vector2i, bool]:
 	return out
 
 func reachable_for(unit: Unit) -> Dictionary[Vector2i, int]:
-	return grid.reachable(unit.pos, unit.move_range, blocked_for_move())
+	return grid.reachable(unit.pos, unit.movement(), blocked_for_move())
 
 ## Trace a straight cardinal attack from `from` along `dir`, up to `max_len`.
 ## Returns { cells, hit_unit, hit_reactor, hit_pos, blocked_by_wall }.
@@ -158,10 +168,15 @@ func move_unit(unit: Unit, dest: Vector2i) -> void:
 func damage_unit(unit: Unit, amount: int, cause: String = "hit", by_id: int = -1) -> int:
 	if not unit.is_alive():
 		return 0
-	var final: int = mini(unit.mitigate(amount), unit.hp)
+	if cause == "collision" and unit.has_system("shock_absorbers"):
+		BuildEffects.proc(self, unit, "system", "shock_absorbers")
+	var potential: int = unit.mitigate(amount, cause)
+	var final: int = mini(potential, unit.hp)
+	var old_condition := unit.damage_state()
 	unit.hp -= final
+	BuildEffects.update_damage(self, unit, old_condition)
 	tel.note_damage(self, unit.id, final, cause, by_id)
-	events.append({"t": "damage", "id": unit.id, "pos": unit.pos, "amount": final, "hp": unit.hp, "cause": cause})
+	events.append({"t": "damage", "id": unit.id, "pos": unit.pos, "amount": final, "potential": potential, "hp": unit.hp, "cause": cause})
 	if not unit.is_alive():
 		if occupancy.get(unit.pos, -1) == unit.id:
 			occupancy.erase(unit.pos)
@@ -249,6 +264,10 @@ func player_move(unit: Unit, dest: Vector2i) -> bool:
 	var path: Array[Vector2i] = grid.find_path(unit.pos, dest, blocked_for_move())
 	if path.is_empty():
 		return false
+	if unit.has_system("vector_thrusters") and not unit.thrusters_used:
+		BuildEffects.proc(self, unit, "system", "vector_thrusters")
+		unit.thrusters_used = true
+	unit.moved_this_turn += path.size()
 	move_unit(unit, dest)
 	events.append({"t": "move", "id": unit.id, "path": path})
 	unit.ap -= 1
@@ -265,9 +284,9 @@ func player_action(unit: Unit, action_id: String, target_cell: Vector2i, opts: D
 		return false
 	if not ActionPreview.build(self, unit, action_id, target_cell, opts).valid:
 		return false
-	MechActions.execute(self, unit, action_id, target_cell, opts)
 	if not free:
 		unit.ap -= 1
+	MechActions.execute(self, unit, action_id, target_cell, opts)
 	tel.note_action(unit.kind, action_id)
 	_check_end()
 	return true
@@ -322,6 +341,7 @@ func _start_player_turn() -> void:
 	for m: Unit in player_mechs():
 		if m.is_alive():
 			m.ap = m.max_ap
+			m.reset_turn()
 	_announce_spawns(turn_number)
 	_check_end()
 
@@ -462,3 +482,26 @@ func _end_game(won: bool) -> void:
 	phase = Phase.WON if won else Phase.LOST
 	tel.finalize(self, won)
 	events.append({"t": "game_over", "won": won})
+
+## Isolated action simulation for previews. Mission data/telegraphs are read-only
+## during actions; mutable units, terrain, occupancy and telemetry are independent.
+func simulation_copy() -> BattleState:
+	var result := BattleState.new(data, loadout)
+	result.units.clear()
+	for id: int in units:
+		result.units[id] = units[id].copy()
+	result.occupancy = occupancy.duplicate()
+	result.objects.clear()
+	for c: Vector2i in objects:
+		var o: GridObject = objects[c]
+		result.objects[c] = GridObject._mk(o.kind, o.pos, o.owner_id, o.hp)
+		result.objects[c].max_hp = o.max_hp
+	result.reactor = result.objects[reactor.pos]
+	result.grid = Grid.new(grid.width, grid.height, grid.wall_cells())
+	result.phase = phase
+	result.turn_number = turn_number
+	result.turns_survived = turns_survived
+	result.pending_spawns = pending_spawns.duplicate(true)
+	result.telegraphs = telegraphs.duplicate()
+	result.events.clear()
+	return result

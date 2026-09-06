@@ -105,5 +105,6 @@ func summary_text(state: BattleState) -> String:
 	lines.append("Environment")
 	lines.append("  Barrels triggered: %d   Explosions: %d   Reactor damage taken: %d" % [
 		c.get("barrels_triggered", 0), c.get("explosions", 0), c.get("reactor_damage_taken", 0)])
+	lines.append("Build effects: " + str(c))
 	lines.append("=================================================")
 	return "\n".join(lines)

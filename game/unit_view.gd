@@ -6,7 +6,7 @@ extends Node2D
 ## damage / death. Exact HP is drawn only while the unit is selected or hovered
 ## — combat should read from the bars, not from numbers.
 
-const R: float = GridView.CELL * 0.34
+const R: float = GridView.TILE_HEIGHT * 0.40
 
 const COLORS: Dictionary = {
 	Unit.Kind.LANCER: Color(0.30, 0.55, 1.00),
@@ -43,9 +43,13 @@ func set_hovered(value: bool) -> void:
 	hovered = value
 	queue_redraw()
 
+func _process(_delta: float) -> void:
+	z_index = GridView.visual_depth(position)
+
 func _draw() -> void:
 	if unit == null:
 		return
+	draw_set_transform(Vector2(0, -R))
 	var col: Color = COLORS.get(unit.kind, Color.MAGENTA)
 
 	if selected:
@@ -73,6 +77,8 @@ func _draw() -> void:
 		if unit.kind == Unit.Kind.INTERCEPTOR:
 			draw_arc(Vector2.ZERO, R * 0.42, 0.0, TAU, 16, Color(1, 1, 1, 0.7), 2.0)
 
+	if unit.braced:
+		draw_arc(Vector2.ZERO, R + 4, 0, TAU, 24, Color(0.4, 1, 1), 3)
 	_draw_hp_bar()
 	if unit.is_player():
 		_draw_ap_pips()
@@ -104,7 +110,7 @@ func _draw_ap_pips() -> void:
 		return
 	var gap: float = 12.0
 	var start_x: float = -gap * (n - 1) * 0.5
-	var y: float = R + 11.0
+	var y: float = R + 5.0
 	for k: int in range(n):
 		var c := Vector2(start_x + k * gap, y)
 		var filled: bool = k < unit.ap

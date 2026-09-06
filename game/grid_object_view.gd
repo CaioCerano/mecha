@@ -4,7 +4,7 @@ extends Node2D
 ## The reactor (purple diamond + compact HP bar), the thrown spear lying on
 ## the ground, and a deployed shield acting as terrain.
 
-const CELL: int = GridView.CELL
+
 
 var obj: GridObject
 var hovered: bool = false
@@ -12,6 +12,7 @@ var hovered: bool = false
 func setup(o: GridObject) -> void:
 	obj = o
 	position = GridView.cell_to_world(o.pos)
+	z_index = 1 if o.kind == GridObject.Kind.PIT else GridView.visual_depth(position)
 	refresh()
 
 func refresh() -> void:
@@ -29,8 +30,14 @@ func flash() -> void:
 	tw.tween_property(self, "modulate", Color.WHITE, 0.3)
 
 func _draw() -> void:
-	var h: float = CELL * 0.5
+	var h: float = GridView.HALF_HEIGHT
+	if obj.kind in [GridObject.Kind.REACTOR, GridObject.Kind.EXPLOSIVE, GridObject.Kind.DEPLOYED_SHIELD]:
+		draw_set_transform(Vector2(0, -h * 0.7))
 	match obj.kind:
+		GridObject.Kind.ANCHOR:
+			draw_colored_polygon(GridView.diamond(Vector2.ZERO, 0.45), Color(0.2, 0.8, 0.85, 0.5))
+			draw_line(Vector2(0, 4), Vector2(0, -20), Color(0.75, 1, 1), 3)
+			draw_arc(Vector2(0, -13), 7, 0, PI, 16, Color(0.75, 1, 1), 3)
 		GridObject.Kind.REACTOR:
 			var pts := PackedVector2Array([
 				Vector2(0, -h * 0.8), Vector2(h * 0.8, 0), Vector2(0, h * 0.8), Vector2(-h * 0.8, 0),
@@ -45,14 +52,10 @@ func _draw() -> void:
 			draw_rect(Rect2(Vector2(-h * 0.8, -h * 0.8), Vector2(h * 1.6, h * 1.6)), Color(0.24, 0.62, 0.34))
 			draw_arc(Vector2.ZERO, h * 0.55, 0.0, TAU, 20, Color(0.7, 1.0, 0.8), 3.0)
 		GridObject.Kind.PIT:
-			# an unmistakable hole: black well + hazard-striped rim
-			draw_rect(Rect2(Vector2(-h * 0.94, -h * 0.94), Vector2(h * 1.88, h * 1.88)), Color(0.02, 0.02, 0.04))
-			draw_circle(Vector2.ZERO, h * 0.62, Color(0.06, 0.06, 0.09))
-			for k: int in range(8):
-				var a0: float = TAU * k / 8.0
-				var a1: float = a0 + TAU / 16.0
-				var col: Color = Color(0.85, 0.65, 0.1) if k % 2 == 0 else Color(0.1, 0.1, 0.1)
-				draw_arc(Vector2.ZERO, h * 0.82, a0, a1, 6, col, 4.0)
+			var rim := GridView.diamond(Vector2.ZERO, 0.92)
+			draw_colored_polygon(rim, Color(0.025, 0.025, 0.04))
+			draw_polyline(rim + PackedVector2Array([rim[0]]), Color(0.9, 0.65, 0.12), 2.5)
+			draw_colored_polygon(GridView.diamond(Vector2(0, 3), 0.55), Color(0.06, 0.07, 0.10))
 		GridObject.Kind.EXPLOSIVE:
 			# a barrel: read as interactive / destructible
 			draw_rect(Rect2(Vector2(-h * 0.52, -h * 0.66), Vector2(h * 1.04, h * 1.32)), Color(0.78, 0.42, 0.14))
